@@ -1,60 +1,86 @@
-
 package notify
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"time"
-
-	"go.opentelemetry.io/collector/component"
-	"go.uber.org/zap"
 )
 
-// Config for Notifier
-type Config struct {
-	Endpoints []string
-	Timeout   time.Duration
+// Event is the minimal event shape the connector emits.
+// Keep in sync with alertsgenconnector.alertEvent.
+type Event struct {
+	Rule     string            `json:"rule"`
+	State    string            `json:"state"` // firing|resolved|no_data
+	Severity string            `json:"severity"`
+	Labels   map[string]string `json:"labels"`
+	Value    float64           `json:"value"`
+	Window   string            `json:"window"`
+	For      string            `json:"for"`
 }
 
-// AlertEvent is a simplified notification payload.
-type AlertEvent struct {
-	Rule     string
-	State    string
-	Severity string
-	Labels   map[string]string
-	Value    float64
-	Window   string
-	For      string
+// Notifier is a pluggable sink. Implementations should be non-blocking
+// and handle retries/backoff internally.
+type Notifier interface {
+	Send(ctx context.Context, events []Event) error
 }
 
-// Notifier sends alerts to endpoints (Alertmanager-compatible hook to be implemented).
-type Notifier struct {
-	logger *zap.Logger
-	cfg    Config
+// Nop is a no-op notifier.
+type Nop struct{}
+
+func NewNop() *Nop                                 { return &Nop{} }
+func (n *Nop) Send(context.Context, []Event) error { return nil }
+
+// Alertmanager implements batch POST to /api/v2/alerts.
+type Alertmanager struct {
+	Client  *http.Client
+	BaseURL string
 }
 
-// New constructs a Notifier.
-func New(set component.TelemetrySettings, cfg Config) *Notifier {
-	return &Notifier{logger: set.Logger, cfg: cfg}
+func NewAlertmanager(url string, timeout time.Duration) *Alertmanager {
+	return &Alertmanager{
+		Client:  &http.Client{Timeout: timeout},
+		BaseURL: url,
+	}
 }
 
-// Notify sends a batch of alert events (best-effort).
-func (n *Notifier) Notify(alerts []AlertEvent) error {
-	if len(alerts) == 0 {
+func (a *Alertmanager) Send(ctx context.Context, events []Event) error {
+	if a == nil || a.BaseURL == "" || len(events) == 0 {
 		return nil
 	}
-	// For production, implement HTTP POST to n.cfg.Endpoints with n.cfg.Timeout.
-	// Here we just log them for now.
-	for _, a := range alerts {
-		n.logger.Info("alert",
-			zap.String("rule", a.Rule),
-			zap.String("state", a.State),
-			zap.String("severity", a.Severity),
-		)
+	payload := make([]map[string]any, 0, len(events))
+	for _, ev := range events {
+		labels := map[string]string{
+			"alertname": ev.Rule,
+			"severity":  ev.Severity,
+			"state":     ev.State,
+		}
+		for k, v := range ev.Labels {
+			labels[k] = v
+		}
+		annotations := map[string]string{
+			"value":  fmt.Sprintf("%g", ev.Value),
+			"window": ev.Window,
+			"for":    ev.For,
+		}
+		payload = append(payload, map[string]any{
+			"labels":      labels,
+			"annotations": annotations,
+		})
+	}
+	b, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/api/v2/alerts", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("alertmanager responded %s", resp.Status)
 	}
 	return nil
-}
-
-// SendError helper for logging errors.
-func (n *Notifier) SendError(ctx context.Context, err error, endpoint string) {
-	n.logger.Error("notify failed", zap.String("endpoint", endpoint), zap.Error(err))
 }

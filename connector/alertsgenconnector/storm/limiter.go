@@ -1,34 +1,55 @@
 package storm
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
+// Limiter applies coarse global throttles for alert storms.
 type Limiter struct {
-    maxPerMinute int
-    slots [60]int
-    idx int
-    lastTick time.Time
+	MaxTransitionsPerMinute int
+	MaxEventsPerInterval    int
+	Interval                time.Duration
+
+	mu          sync.Mutex
+	windowEnd   time.Time
+	transitions int
 }
 
-func NewLimiter(maxPerMinute int) *Limiter {
-    if maxPerMinute <= 0 { maxPerMinute = 100 }
-    return &Limiter{maxPerMinute: maxPerMinute, lastTick: time.Now()}
+func New(maxTPM, maxPerInterval int, interval time.Duration) *Limiter {
+	return &Limiter{
+		MaxTransitionsPerMinute: maxTPM,
+		MaxEventsPerInterval:    maxPerInterval,
+		Interval:                interval,
+	}
 }
 
-func (l *Limiter) Allow() bool {
-    now := time.Now()
-    if now.Sub(l.lastTick) >= time.Second {
-        steps := int(now.Sub(l.lastTick)/time.Second)
-        for i:=0; i<steps && i<60; i++ {
-            l.idx = (l.idx+1)%60
-            l.slots[l.idx]=0
-        }
-        l.lastTick = now
-    }
-    total := 0
-    for _,v := range l.slots { total += v }
-    if total >= l.maxPerMinute {
-        return false
-    }
-    l.slots[l.idx]++
-    return true
+// Allow returns how many events can be processed (may be less than n).
+func (l *Limiter) Allow(n int) (allow int, dropped int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	if l.windowEnd.IsZero() || now.After(l.windowEnd) {
+		l.windowEnd = now.Add(l.Interval)
+		l.transitions = 0
+	}
+
+	allow = n
+	if l.MaxTransitionsPerMinute > 0 {
+		if l.transitions+n > l.MaxTransitionsPerMinute {
+			allow = l.MaxTransitionsPerMinute - l.transitions
+			if allow < 0 {
+				allow = 0
+			}
+		}
+		l.transitions += allow
+	}
+	if l.MaxEventsPerInterval > 0 && allow > l.MaxEventsPerInterval {
+		allow = l.MaxEventsPerInterval
+	}
+	if allow < n {
+		dropped = n - allow
+	}
+	return
 }

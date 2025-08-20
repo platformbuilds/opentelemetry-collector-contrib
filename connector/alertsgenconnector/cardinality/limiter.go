@@ -1,39 +1,74 @@
 package cardinality
 
 import (
-    "crypto/sha256"
-    "encoding/hex"
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
 )
 
-type Limiter struct {
-    maxLabels int
-    hashAt int
+type Control struct {
+	MaxLabels     int
+	MaxValLen     int
+	MaxTotalSize  int
+	HashIfExceeds int
+	Allow         map[string]struct{}
+	Block         map[string]struct{}
 }
 
-func NewLimiter(maxLabels, hashAt int) *Limiter {
-    if maxLabels <= 0 { maxLabels = 20 }
-    if hashAt <= 0 { hashAt = 128 }
-    return &Limiter{maxLabels: maxLabels, hashAt: hashAt}
-}
-
-func (l *Limiter) Enforce(labels map[string]string) map[string]string {
-    out := map[string]string{}
-    count := 0
-    for k, v := range labels {
-        if count >= l.maxLabels {
-            break
-        }
-        if len(v) > l.hashAt {
-            out[k] = hashPrefix8(v)
-        } else {
-            out[k] = v
-        }
-        count++
-    }
-    return out
-}
-
-func hashPrefix8(s string) string {
-    h := sha256.Sum256([]byte(s))
-    return hex.EncodeToString(h[:])[:8]
+func (c *Control) Enforce(lbls map[string]string) map[string]string {
+	if c == nil {
+		return lbls
+	}
+	// blocklist
+	for k := range lbls {
+		if _, b := c.Block[k]; b {
+			delete(lbls, k)
+		}
+	}
+	// trim/hash long values and compute total
+	total := 0
+	for k, v := range lbls {
+		if c.MaxValLen > 0 && len(v) > c.MaxValLen {
+			if c.HashIfExceeds > 0 {
+				sum := sha256.Sum256([]byte(v))
+				lbls[k] = hex.EncodeToString(sum[:])[:8]
+			} else {
+				lbls[k] = v[:c.MaxValLen]
+			}
+		}
+		total += len(k) + len(lbls[k])
+	}
+	// total size cap: drop non-allowed first
+	if c.MaxTotalSize > 0 && total > c.MaxTotalSize {
+		var losers []string
+		for k := range lbls {
+			if _, ok := c.Allow[k]; !ok {
+				losers = append(losers, k)
+			}
+		}
+		sort.Strings(losers)
+		for _, k := range losers {
+			if total <= c.MaxTotalSize {
+				break
+			}
+			total -= len(k) + len(lbls[k])
+			delete(lbls, k)
+		}
+	}
+	// label count cap
+	if c.MaxLabels > 0 && len(lbls) > c.MaxLabels {
+		var keys []string
+		for k := range lbls {
+			if _, ok := c.Allow[k]; !ok {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for len(lbls) > c.MaxLabels && len(keys) > 0 {
+			k := keys[len(keys)-1]
+			delete(lbls, k)
+			keys = keys[:len(keys)-1]
+		}
+	}
+	return lbls
 }

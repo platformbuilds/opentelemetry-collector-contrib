@@ -2,17 +2,14 @@ package alertsgenconnector
 
 import (
 	"context"
-	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/consumer"
 )
 
-// Component type string; convert to component.Type at call sites.
 const typeStr = "alertsgen"
 
-// NewFactory returns the Alertsgen connector factory.
 func NewFactory() connector.Factory {
 	return connector.NewFactory(
 		component.MustNewType(typeStr),
@@ -23,36 +20,29 @@ func NewFactory() connector.Factory {
 	)
 }
 
-func createDefaultConfig() component.Config {
-	return &Config{
-		WindowSize: 5 * time.Second,
-		Rules:      []RuleCfg{},
-	}
-}
-
-func createTracesToTraces(
-	ctx context.Context,
+func createTracesToMetrics(
+	_ context.Context,
 	set connector.Settings,
 	cfg component.Config,
-	next consumer.Traces,
+	next consumer.Metrics,
 ) (connector.Traces, error) {
-	return newTracesConnector(ctx, set, cfg.(*Config), next)
+	return newConnector(set, cfg.(*Config), next)
 }
 
-func createLogsToLogs(
-	ctx context.Context,
+func createLogsToMetrics(
+	_ context.Context,
 	set connector.Settings,
 	cfg component.Config,
-	next consumer.Logs,
+	next consumer.Metrics,
 ) (connector.Logs, error) {
-	return newLogsConnector(ctx, set, cfg.(*Config), next)
+	return newConnector(set, cfg.(*Config), next)
 }
 
 func createMetricsToMetrics(
-	ctx context.Context,
+	_ context.Context,
 	set connector.Settings,
 	cfg component.Config,
 	next consumer.Metrics,
 ) (connector.Metrics, error) {
-	return newMetricsConnector(ctx, set, cfg.(*Config), next)
+	return newConnector(set, cfg.(*Config), next)
 }

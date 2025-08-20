@@ -4,11 +4,9 @@ import (
 	"context"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
 
-// Metrics wraps OTel instruments for self-observability.
 type Metrics struct {
 	evalTotal     metric.Int64Counter
 	evalDuration  metric.Float64Histogram
@@ -18,45 +16,36 @@ type Metrics struct {
 	droppedTotal  metric.Int64Counter
 }
 
-// New creates a metrics bundle using the provided meter provider (global if nil).
 func New(mp metric.MeterProvider) (*Metrics, error) {
-	if mp == nil {
-		mp = otel.GetMeterProvider() // <- use global from go.opentelemetry.io/otel
-	}
 	meter := mp.Meter("alertsgenconnector")
 
 	evalTotal, err := meter.Int64Counter("otel_alert_evaluations_total",
-		metric.WithDescription("Total number of rule evaluations"))
+		metric.WithDescription("Total number of rule evaluation passes"))
 	if err != nil {
 		return nil, err
 	}
-
 	evalDuration, err := meter.Float64Histogram("otel_alert_evaluation_duration_seconds",
-		metric.WithDescription("Duration of rule evaluations in seconds"))
+		metric.WithDescription("Wall time of a rule evaluation pass in seconds"))
 	if err != nil {
 		return nil, err
 	}
-
 	eventsEmitted, err := meter.Int64Counter("otel_alert_events_emitted_total",
-		metric.WithDescription("Total number of alert events emitted"))
+		metric.WithDescription("Number of alert events emitted"))
 	if err != nil {
 		return nil, err
 	}
-
 	notifyTotal, err := meter.Int64Counter("otel_alert_notifications_total",
-		metric.WithDescription("Total number of alert notification batches"))
+		metric.WithDescription("Number of notification batches sent"))
 	if err != nil {
 		return nil, err
 	}
-
 	activeGauge, err := meter.Int64UpDownCounter("otel_alert_active_total",
-		metric.WithDescription("Number of active firing alerts (up/down)"))
+		metric.WithDescription("Active firing alerts (up/down)"))
 	if err != nil {
 		return nil, err
 	}
-
 	droppedTotal, err := meter.Int64Counter("otel_alert_dropped_total",
-		metric.WithDescription("Number of alerts dropped by limiter/dedup"))
+		metric.WithDescription("Alerts dropped by limiter/dedup"))
 	if err != nil {
 		return nil, err
 	}
@@ -71,36 +60,32 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 	}, nil
 }
 
-func (m *Metrics) RecordEvaluation(ctx context.Context, rule string, status string, dur time.Duration) {
+func (m *Metrics) RecordEvaluation(ctx context.Context, _ string, _ string, dur time.Duration) {
 	if m == nil {
 		return
 	}
-	m.evalTotal.Add(ctx, 1 /* metric.WithAttributes() ok with no attrs */)
+	m.evalTotal.Add(ctx, 1)
 	m.evalDuration.Record(ctx, dur.Seconds())
 }
-
-func (m *Metrics) RecordEvents(ctx context.Context, n int, rule string, sev string) {
+func (m *Metrics) RecordEvents(ctx context.Context, n int, _ string, _ string) {
 	if m == nil || n <= 0 {
 		return
 	}
 	m.eventsEmitted.Add(ctx, int64(n))
 }
-
-func (m *Metrics) AddActive(ctx context.Context, delta int, rule string, sev string) {
+func (m *Metrics) AddActive(ctx context.Context, delta int, _ string, _ string) {
 	if m == nil || delta == 0 {
 		return
 	}
 	m.activeGauge.Add(ctx, int64(delta))
 }
-
-func (m *Metrics) RecordNotify(ctx context.Context, ok bool) {
+func (m *Metrics) RecordNotify(ctx context.Context, _ bool) {
 	if m == nil {
 		return
 	}
 	m.notifyTotal.Add(ctx, 1)
 }
-
-func (m *Metrics) RecordDropped(ctx context.Context, n int, reason string) {
+func (m *Metrics) RecordDropped(ctx context.Context, n int, _ string) {
 	if m == nil || n <= 0 {
 		return
 	}
