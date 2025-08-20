@@ -25,7 +25,7 @@ type ruleSet struct {
 	stateMu sync.Mutex
 	state   map[uint64]*alertState
 
-	// telemetry (may be nil; caller sets it in NewEngine)
+	// telemetry (may be nil; set by engine)
 	mx *telemetry.Metrics
 }
 
@@ -280,7 +280,23 @@ func (e *exprAbsent) evaluateLog(rows []logRow) (float64, bool)       { return 0
 func (e *exprAbsent) evaluateMetric(rows []metricRow) (float64, bool) { return 0, len(rows) == 0 }
 func (e *exprAbsent) compare(v float64) bool                          { return true }
 
-// evaluation pass
+// ---- grouping containers (avoid using map[string]string as map keys) ----
+
+type trGroup struct {
+	Labels map[string]string
+	Rows   []traceRow
+}
+type lgGroup struct {
+	Labels map[string]string
+	Rows   []logRow
+}
+type mtGroup struct {
+	Labels map[string]string
+	Rows   []metricRow
+}
+
+// ---- evaluation pass ----
+
 func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []stateMetric) {
 	tr, lg, mt := ing.drain()
 	var events []alertEvent
@@ -307,13 +323,13 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		spans := filterTraceRows(tr, cr.sel)
 		groups := groupTraceRows(spans, cr.groupBy)
-		for gk, rows := range groups {
-			rows = filterWindowTr(rows, now, cr.window)
+		for _, g := range groups {
+			rows := filterWindowTr(g.Rows, now, cr.window)
 			if len(rows) == 0 && cr.expr.kind() != "absent" {
 				continue
 			}
 			val, ok := cr.expr.evaluateTrace(rows)
-			handle(cr, fingerprint(cr.cfg.Name, gk), gk, val, ok)
+			handle(cr, fingerprint(cr.cfg.Name, g.Labels), g.Labels, val, ok)
 		}
 
 		dur := time.Since(start)
@@ -332,13 +348,13 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		rows0 := filterLogRows(lg, cr.sel)
 		groups := groupLogRows(rows0, cr.groupBy)
-		for gk, rows := range groups {
-			rows = filterWindowLg(rows, now, cr.window)
+		for _, g := range groups {
+			rows := filterWindowLg(g.Rows, now, cr.window)
 			if len(rows) == 0 && cr.expr.kind() != "absent" {
 				continue
 			}
 			val, ok := cr.expr.evaluateLog(rows)
-			handle(cr, fingerprint(cr.cfg.Name, gk), gk, val, ok)
+			handle(cr, fingerprint(cr.cfg.Name, g.Labels), g.Labels, val, ok)
 		}
 
 		dur := time.Since(start)
@@ -357,13 +373,13 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		rows0 := filterMetricRows(mt, cr.sel)
 		groups := groupMetricRows(rows0, cr.groupBy)
-		for gk, rows := range groups {
-			rows = filterWindowMt(rows, now, cr.window)
+		for _, g := range groups {
+			rows := filterWindowMt(g.Rows, now, cr.window)
 			if len(rows) == 0 && cr.expr.kind() != "absent" {
 				continue
 			}
 			val, ok := cr.expr.evaluateMetric(rows)
-			handle(cr, fingerprint(cr.cfg.Name, gk), gk, val, ok)
+			handle(cr, fingerprint(cr.cfg.Name, g.Labels), g.Labels, val, ok)
 		}
 
 		dur := time.Since(start)
@@ -464,29 +480,76 @@ func matchSel(attrs map[string]string, sel map[string]*regexp.Regexp) bool {
 	return true
 }
 
-func groupTraceRows(rows []traceRow, keys []string) map[map[string]string][]traceRow {
-	out := map[map[string]string][]traceRow{}
+// ---- grouping helpers (using canonical string bucket keys) ----
+
+func groupTraceRows(rows []traceRow, keys []string) []trGroup {
+	buckets := map[string]*trGroup{}
 	for _, r := range rows {
-		key := pick(r.attrs, keys)
-		out[key] = append(out[key], r)
+		lbls := pick(r.attrs, keys)
+		key := canonKey(lbls)
+		g := buckets[key]
+		if g == nil {
+			g = &trGroup{Labels: lbls}
+			buckets[key] = g
+		}
+		g.Rows = append(g.Rows, r)
+	}
+	out := make([]trGroup, 0, len(buckets))
+	for _, g := range buckets {
+		out = append(out, *g)
 	}
 	return out
 }
-func groupLogRows(rows []logRow, keys []string) map[map[string]string][]logRow {
-	out := map[map[string]string][]logRow{}
+
+func groupLogRows(rows []logRow, keys []string) []lgGroup {
+	buckets := map[string]*lgGroup{}
 	for _, r := range rows {
-		key := pick(r.attrs, keys)
-		out[key] = append(out[key], r)
+		lbls := pick(r.attrs, keys)
+		key := canonKey(lbls)
+		g := buckets[key]
+		if g == nil {
+			g = &lgGroup{Labels: lbls}
+			buckets[key] = g
+		}
+		g.Rows = append(g.Rows, r)
+	}
+	out := make([]lgGroup, 0, len(buckets))
+	for _, g := range buckets {
+		out = append(out, *g)
 	}
 	return out
 }
-func groupMetricRows(rows []metricRow, keys []string) map[map[string]string][]metricRow {
-	out := map[map[string]string][]metricRow{}
+
+func groupMetricRows(rows []metricRow, keys []string) []mtGroup {
+	buckets := map[string]*mtGroup{}
 	for _, r := range rows {
-		key := pick(r.attrs, keys)
-		out[key] = append(out[key], r)
+		lbls := pick(r.attrs, keys)
+		key := canonKey(lbls)
+		g := buckets[key]
+		if g == nil {
+			g = &mtGroup{Labels: lbls}
+			buckets[key] = g
+		}
+		g.Rows = append(g.Rows, r)
+	}
+	out := make([]mtGroup, 0, len(buckets))
+	for _, g := range buckets {
+		out = append(out, *g)
 	}
 	return out
+}
+
+func canonKey(lbls map[string]string) string {
+	ks := make([]string, 0, len(lbls))
+	for k := range lbls {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	parts := make([]string, 0, len(ks))
+	for _, k := range ks {
+		parts = append(parts, k+"="+lbls[k])
+	}
+	return strings.Join(parts, "|")
 }
 
 func pick(attrs map[string]string, keys []string) map[string]string {
@@ -511,6 +574,7 @@ func fpMap(m map[string]string) []string {
 	}
 	return out
 }
+
 func fingerprint(rule string, labels map[string]string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(rule))
