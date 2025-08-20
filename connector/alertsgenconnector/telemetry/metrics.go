@@ -1,12 +1,11 @@
-
 package telemetry
 
 import (
 	"context"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/global"
 )
 
 // Metrics wraps OTel instruments for self-observability.
@@ -22,7 +21,7 @@ type Metrics struct {
 // New creates a metrics bundle using the provided meter provider (global if nil).
 func New(mp metric.MeterProvider) (*Metrics, error) {
 	if mp == nil {
-		mp = global.MeterProvider()
+		mp = otel.GetMeterProvider() // <- use global from go.opentelemetry.io/otel
 	}
 	meter := mp.Meter("alertsgenconnector")
 
@@ -76,34 +75,34 @@ func (m *Metrics) RecordEvaluation(ctx context.Context, rule string, status stri
 	if m == nil {
 		return
 	}
-	m.evalTotal.Add(ctx, 1, metric.WithAttributes())
-	m.evalDuration.Record(ctx, dur.Seconds(), metric.WithAttributes())
+	m.evalTotal.Add(ctx, 1 /* metric.WithAttributes() ok with no attrs */)
+	m.evalDuration.Record(ctx, dur.Seconds())
 }
 
 func (m *Metrics) RecordEvents(ctx context.Context, n int, rule string, sev string) {
 	if m == nil || n <= 0 {
 		return
 	}
-	m.eventsEmitted.Add(ctx, int64(n), metric.WithAttributes())
+	m.eventsEmitted.Add(ctx, int64(n))
 }
 
 func (m *Metrics) AddActive(ctx context.Context, delta int, rule string, sev string) {
 	if m == nil || delta == 0 {
 		return
 	}
-	m.activeGauge.Add(ctx, int64(delta), metric.WithAttributes())
+	m.activeGauge.Add(ctx, int64(delta))
 }
 
 func (m *Metrics) RecordNotify(ctx context.Context, ok bool) {
 	if m == nil {
 		return
 	}
-	m.notifyTotal.Add(ctx, 1, metric.WithAttributes())
+	m.notifyTotal.Add(ctx, 1)
 }
 
 func (m *Metrics) RecordDropped(ctx context.Context, n int, reason string) {
 	if m == nil || n <= 0 {
 		return
 	}
-	m.droppedTotal.Add(ctx, int64(n), metric.WithAttributes())
+	m.droppedTotal.Add(ctx, int64(n))
 }
