@@ -93,7 +93,7 @@ type ExprCfg struct {
 	Quantile float64 `mapstructure:"quantile"`
 }
 
-func createDefaultConfig() component.Config {
+func CreateDefaultConfig() component.Config {
 	return &Config{
 		WindowSize: 5 * time.Second,
 		Step:       5 * time.Second,

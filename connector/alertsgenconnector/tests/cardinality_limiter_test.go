@@ -1,4 +1,4 @@
-package alertsgenconnector
+package alertsgenconnector_test
 
 import (
 	"testing"

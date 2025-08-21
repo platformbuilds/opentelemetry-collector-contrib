@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/state"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/telemetry"
@@ -20,11 +21,12 @@ import (
 // alertsConnector evaluates streaming telemetry against rules and forwards the
 // original data to the next consumer (Traces->Traces, Logs->Logs, Metrics->Metrics).
 type alertsConnector struct {
-	cfg  *Config
-	rs   *ruleSet
-	ing  *ingester
-	mx   *telemetry.Metrics
-	tsdb *state.TSDBSyncer // optional; nil if HA/TSDB is not configured
+	cfg    *Config
+	logger *zap.Logger
+	rs     *ruleSet
+	ing    *ingester
+	mx     *telemetry.Metrics
+	tsdb   *state.TSDBSyncer // optional; nil if HA/TSDB is not configured
 
 	// downstreams (only one of these will be set depending on factory used)
 	nextTraces  consumer.Traces
@@ -33,39 +35,10 @@ type alertsConnector struct {
 
 	evalMu   sync.Mutex
 	evalStop chan struct{}
+	wg       sync.WaitGroup
 }
 
-// ---- factory helpers --------------------------------------------------------
-
-func createTracesToTraces(
-	ctx context.Context,
-	set connector.Settings,
-	cfg component.Config,
-	next consumer.Traces,
-) (connector.Traces, error) {
-	ac, err := newAlertsConnector(ctx, set, cfg)
-	if err != nil {
-		return nil, err
-	}
-	ac.nextTraces = next
-	return ac, nil
-}
-
-func createLogsToLogs(
-	ctx context.Context,
-	set connector.Settings,
-	cfg component.Config,
-	next consumer.Logs,
-) (connector.Logs, error) {
-	ac, err := newAlertsConnector(ctx, set, cfg)
-	if err != nil {
-		return nil, err
-	}
-	ac.nextLogs = next
-	return ac, nil
-}
-
-func newAlertsConnector(_ context.Context, set connector.Settings, cfg component.Config) (*alertsConnector, error) {
+func newAlertsConnector(ctx context.Context, set connector.Settings, cfg component.Config) (*alertsConnector, error) {
 	c, ok := cfg.(*Config)
 	if !ok {
 		return nil, fmt.Errorf("invalid config type %T", cfg)
@@ -80,22 +53,27 @@ func newAlertsConnector(_ context.Context, set connector.Settings, cfg component
 	// self telemetry
 	mx, err := telemetry.New(set.MeterProvider)
 	if err != nil {
-		return nil, err
+		set.Logger.Warn("Failed to create telemetry", zap.Error(err))
 	}
 	rs.mx = mx
 
 	// ingester holds sliding windows / buffers for the last N seconds
-	ing := newIngester(c) // assumes you have newIngester(*Config) in your package
+	ing := newIngester(c)
 
 	// optional TSDB syncer for HA
 	var ts *state.TSDBSyncer
-	if c.TSDB != nil {
-		ts = state.NewTSDBSyncer(c.TSDB)
-		_ = rs.restoreFromTSDB(ts) // best-effort
+	if c.HA != nil && c.HA.TSDBReadURL != "" {
+		ts, err = state.NewTSDBSyncer(c.HA.TSDBReadURL, c.HA.QueryTimeout, c.HA.DedupWindow)
+		if err != nil {
+			set.Logger.Warn("Failed to create TSDB syncer", zap.Error(err))
+		} else {
+			_ = rs.restoreFromTSDB(ts)
+		}
 	}
 
 	return &alertsConnector{
 		cfg:      c,
+		logger:   set.Logger,
 		rs:       rs,
 		ing:      ing,
 		mx:       mx,
@@ -107,7 +85,8 @@ func newAlertsConnector(_ context.Context, set connector.Settings, cfg component
 // ---- lifecycle --------------------------------------------------------------
 
 func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
-	// periodic evaluation loop
+	e.logger.Info("Starting alerts connector")
+
 	interval := e.cfg.Step
 	if interval <= 0 {
 		interval = e.cfg.WindowSize
@@ -116,12 +95,15 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		interval = 5 * time.Second
 	}
 
-	t := time.NewTicker(interval)
+	e.wg.Add(1)
 	go func() {
-		defer t.Stop()
+		defer e.wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
 		for {
 			select {
-			case <-t.C:
+			case <-ticker.C:
 				e.evaluateOnce(time.Now())
 			case <-e.evalStop:
 				return
@@ -130,16 +112,18 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 			}
 		}
 	}()
+
 	return nil
 }
 
-func (e *alertsConnector) Shutdown(context.Context) error {
+func (e *alertsConnector) Shutdown(ctx context.Context) error {
+	e.logger.Info("Shutting down alerts connector")
 	close(e.evalStop)
+	e.wg.Wait()
 	return nil
 }
 
 func (e *alertsConnector) Capabilities() consumer.Capabilities {
-	// We pass through original data to the next consumer.
 	return consumer.Capabilities{MutatesData: false}
 }
 
@@ -151,45 +135,53 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 
 	events, _ := e.rs.evaluate(now, e.ing)
 
-	// Persist alert state to TSDB for HA dedup/continuity (best-effort).
+	// Persist alert state to TSDB for HA dedup/continuity
 	if e.tsdb != nil && len(events) > 0 {
-		_ = e.tsdb.Publish(events)
+		// Direct conversion using append with spread operator
+		interfaceEvents := make([]interface{}, 0, len(events))
+		for _, event := range events {
+			interfaceEvents = append(interfaceEvents, event)
+		}
+		if err := e.tsdb.PublishEvents(interfaceEvents); err != nil {
+			e.logger.Warn("Failed to publish events to TSDB", zap.Error(err))
+		}
 	}
-	// Self-telemetry: number of events produced in this tick.
+
+	// Self-telemetry
 	if e.mx != nil && len(events) > 0 {
 		e.mx.RecordEvents(context.Background(), len(events), "all", "n/a")
 	}
 }
 
-// ---- Consume (Traces, Logs, Metrics) ---------------------------------------
+// ---- Consume methods ---------------------------------------
 
 func (e *alertsConnector) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	// Ingest into sliding window
-	if err := ingestTraces(ctx, td, e.ing); err != nil {
+	if err := e.ing.consumeTraces(td); err != nil {
 		return err
 	}
 	// Forward downstream unchanged
-	if e.nextTraces != nil && !td.ResourceSpans().IsEmpty() {
+	if e.nextTraces != nil {
 		return e.nextTraces.ConsumeTraces(ctx, td)
 	}
 	return nil
 }
 
 func (e *alertsConnector) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
-	if err := ingestLogs(ctx, ld, e.ing); err != nil {
+	if err := e.ing.consumeLogs(ld); err != nil {
 		return err
 	}
-	if e.nextLogs != nil && !ld.ResourceLogs().IsEmpty() {
+	if e.nextLogs != nil {
 		return e.nextLogs.ConsumeLogs(ctx, ld)
 	}
 	return nil
 }
 
 func (e *alertsConnector) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
-	if err := ingestMetrics(ctx, md, e.ing); err != nil {
+	if err := e.ing.consumeMetrics(md); err != nil {
 		return err
 	}
-	if e.nextMetrics != nil && !md.ResourceMetrics().IsEmpty() {
+	if e.nextMetrics != nil {
 		return e.nextMetrics.ConsumeMetrics(ctx, md)
 	}
 	return nil

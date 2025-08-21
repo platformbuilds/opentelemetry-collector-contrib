@@ -13,36 +13,51 @@ const typeStr = "alertsgen"
 func NewFactory() connector.Factory {
 	return connector.NewFactory(
 		component.MustNewType(typeStr),
-		createDefaultConfig,
+		CreateDefaultConfig,
 		connector.WithTracesToTraces(createTracesToTraces, component.StabilityLevelAlpha),
 		connector.WithLogsToLogs(createLogsToLogs, component.StabilityLevelAlpha),
 		connector.WithMetricsToMetrics(createMetricsToMetrics, component.StabilityLevelAlpha),
 	)
 }
 
-func createTracesToMetrics(
-	_ context.Context,
+func createTracesToTraces(
+	ctx context.Context,
 	set connector.Settings,
 	cfg component.Config,
-	next consumer.Metrics,
+	next consumer.Traces,
 ) (connector.Traces, error) {
-	return newConnector(set, cfg.(*Config), next)
+	ac, err := newAlertsConnector(ctx, set, cfg)
+	if err != nil {
+		return nil, err
+	}
+	ac.nextTraces = next
+	return ac, nil
 }
 
-func createLogsToMetrics(
-	_ context.Context,
+func createLogsToLogs(
+	ctx context.Context,
 	set connector.Settings,
 	cfg component.Config,
-	next consumer.Metrics,
+	next consumer.Logs,
 ) (connector.Logs, error) {
-	return newConnector(set, cfg.(*Config), next)
+	ac, err := newAlertsConnector(ctx, set, cfg)
+	if err != nil {
+		return nil, err
+	}
+	ac.nextLogs = next
+	return ac, nil
 }
 
 func createMetricsToMetrics(
-	_ context.Context,
+	ctx context.Context,
 	set connector.Settings,
 	cfg component.Config,
 	next consumer.Metrics,
 ) (connector.Metrics, error) {
-	return newConnector(set, cfg.(*Config), next)
+	ac, err := newAlertsConnector(ctx, set, cfg)
+	if err != nil {
+		return nil, err
+	}
+	ac.nextMetrics = next
+	return ac, nil
 }

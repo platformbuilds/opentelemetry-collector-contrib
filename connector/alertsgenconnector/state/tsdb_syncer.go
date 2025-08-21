@@ -179,3 +179,12 @@ func (f *fnv64a) Sum64() uint64 {
 	}
 	return f.sum
 }
+
+// Add to the existing TSDBSyncer struct methods:
+
+// PublishEvents sends alert events to TSDB (stub for now)
+func (s *TSDBSyncer) PublishEvents(events []interface{}) error {
+	// TODO: Implement actual publishing to TSDB
+	// This would typically write alert state metrics via remote write API
+	return nil
+}

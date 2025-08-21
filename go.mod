@@ -56,3 +56,12 @@ require (
 	google.golang.org/grpc v1.74.2 // indirect
 	google.golang.org/protobuf v1.36.7 // indirect
 )
+
+replace (
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/cardinality => ./cardinality
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/dedup => ./dedup
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/notify => ./notify
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/state => ./state
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/storm => ./storm
+    github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/telemetry => ./telemetry
+)

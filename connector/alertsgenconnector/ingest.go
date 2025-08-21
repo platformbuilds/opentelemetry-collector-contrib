@@ -1,90 +1,201 @@
 package alertsgenconnector
 
 import (
-	"context"
-	"fmt"
+	"sync"
+	"time"
 
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-// Ingestor is the central struct that handles traces, logs, and metrics ingestion
-type Ingestor struct {
-	cfg *Config
+type ingester struct {
+	mu      sync.Mutex
+	cfg     *Config
+	traces  []traceRow
+	logs    []logRow
+	metrics []metricRow
 }
 
-// NewIngestor creates a new ingestor instance
-func NewIngestor(cfg *Config) *Ingestor {
-	return &Ingestor{cfg: cfg}
+type traceRow struct {
+	ts         time.Time
+	attrs      map[string]string
+	durationNs float64
+	statusCode string
 }
 
-// ---- traces ----
-func ingestTraces(_ context.Context, td ptrace.Traces, ing *Ingestor) error {
-	if ing == nil {
-		return fmt.Errorf("ingestor is nil")
-	}
-	if td.ResourceSpans().Len() == 0 {
-		return nil
-	}
+type logRow struct {
+	ts       time.Time
+	attrs    map[string]string
+	body     string
+	severity string
+}
 
-	// Example trace iteration
-	for i := 0; i < td.ResourceSpans().Len(); i++ {
-		rs := td.ResourceSpans().At(i)
-		for j := 0; j < rs.ScopeSpans().Len(); j++ {
-			spans := rs.ScopeSpans().At(j).Spans()
-			for k := 0; k < spans.Len(); k++ {
-				span := spans.At(k)
-				// TODO: add cardinality, HA TSDB sync, storm control, etc.
-				_ = span
+type metricRow struct {
+	ts    time.Time
+	attrs map[string]string
+	name  string
+	value float64
+}
+
+func newIngester(cfg *Config) *ingester {
+	return &ingester{
+		cfg:     cfg,
+		traces:  make([]traceRow, 0, 10000),
+		logs:    make([]logRow, 0, 10000),
+		metrics: make([]metricRow, 0, 10000),
+	}
+}
+
+func (i *ingester) drain() ([]traceRow, []logRow, []metricRow) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	tr := i.traces
+	lg := i.logs
+	mt := i.metrics
+
+	// Reset slices
+	i.traces = make([]traceRow, 0, 10000)
+	i.logs = make([]logRow, 0, 10000)
+	i.metrics = make([]metricRow, 0, 10000)
+
+	return tr, lg, mt
+}
+
+func (i *ingester) consumeTraces(td ptrace.Traces) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	for r := 0; r < td.ResourceSpans().Len(); r++ {
+		rs := td.ResourceSpans().At(r)
+		rAttrs := extractAttrs(rs.Resource().Attributes())
+
+		for s := 0; s < rs.ScopeSpans().Len(); s++ {
+			spans := rs.ScopeSpans().At(s).Spans()
+			for j := 0; j < spans.Len(); j++ {
+				span := spans.At(j)
+				attrs := mergeAttrs(rAttrs, extractAttrs(span.Attributes()))
+
+				i.traces = append(i.traces, traceRow{
+					ts:         span.EndTimestamp().AsTime(),
+					attrs:      attrs,
+					durationNs: float64(span.EndTimestamp() - span.StartTimestamp()),
+					statusCode: span.Status().Code().String(),
+				})
 			}
 		}
 	}
+
+	// Trim to window size if needed
+	if len(i.traces) > 100000 {
+		i.traces = i.traces[len(i.traces)-100000:]
+	}
+
 	return nil
 }
 
-// ---- logs ----
-func ingestLogs(_ context.Context, ld plog.Logs, ing *Ingestor) error {
-	if ing == nil {
-		return fmt.Errorf("ingestor is nil")
-	}
-	if ld.ResourceLogs().Len() == 0 {
-		return nil
-	}
+func (i *ingester) consumeLogs(ld plog.Logs) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
-	for i := 0; i < ld.ResourceLogs().Len(); i++ {
-		rl := ld.ResourceLogs().At(i)
-		for j := 0; j < rl.ScopeLogs().Len(); j++ {
-			logs := rl.ScopeLogs().At(j).LogRecords()
-			for k := 0; k < logs.Len(); k++ {
-				logRecord := logs.At(k)
-				// TODO: Apply deduplication, cardinality, storm/backpressure
-				_ = logRecord
+	for r := 0; r < ld.ResourceLogs().Len(); r++ {
+		rl := ld.ResourceLogs().At(r)
+		rAttrs := extractAttrs(rl.Resource().Attributes())
+
+		for s := 0; s < rl.ScopeLogs().Len(); s++ {
+			logs := rl.ScopeLogs().At(s).LogRecords()
+			for j := 0; j < logs.Len(); j++ {
+				lr := logs.At(j)
+				attrs := mergeAttrs(rAttrs, extractAttrs(lr.Attributes()))
+
+				i.logs = append(i.logs, logRow{
+					ts:       lr.Timestamp().AsTime(),
+					attrs:    attrs,
+					body:     lr.Body().AsString(),
+					severity: lr.SeverityText(),
+				})
 			}
 		}
 	}
+
+	if len(i.logs) > 100000 {
+		i.logs = i.logs[len(i.logs)-100000:]
+	}
+
 	return nil
 }
 
-// ---- metrics ----
-func ingestMetrics(_ context.Context, md pmetric.Metrics, ing *Ingestor) error {
-	if ing == nil {
-		return fmt.Errorf("ingestor is nil")
-	}
-	if md.ResourceMetrics().Len() == 0 {
-		return nil
-	}
+func (i *ingester) consumeMetrics(md pmetric.Metrics) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 
-	for i := 0; i < md.ResourceMetrics().Len(); i++ {
-		rm := md.ResourceMetrics().At(i)
-		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
-			metrics := rm.ScopeMetrics().At(j).Metrics()
-			for k := 0; k < metrics.Len(); k++ {
-				metric := metrics.At(k)
-				// TODO: Apply cardinality control, HA TSDB sync, etc.
-				_ = metric
+	for r := 0; r < md.ResourceMetrics().Len(); r++ {
+		rm := md.ResourceMetrics().At(r)
+		rAttrs := extractAttrs(rm.Resource().Attributes())
+
+		for s := 0; s < rm.ScopeMetrics().Len(); s++ {
+			metrics := rm.ScopeMetrics().At(s).Metrics()
+			for j := 0; j < metrics.Len(); j++ {
+				metric := metrics.At(j)
+
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					dps := metric.Gauge().DataPoints()
+					for k := 0; k < dps.Len(); k++ {
+						dp := dps.At(k)
+						attrs := mergeAttrs(rAttrs, extractAttrs(dp.Attributes()))
+
+						i.metrics = append(i.metrics, metricRow{
+							ts:    dp.Timestamp().AsTime(),
+							attrs: attrs,
+							name:  metric.Name(),
+							value: dp.DoubleValue(),
+						})
+					}
+
+				case pmetric.MetricTypeSum:
+					dps := metric.Sum().DataPoints()
+					for k := 0; k < dps.Len(); k++ {
+						dp := dps.At(k)
+						attrs := mergeAttrs(rAttrs, extractAttrs(dp.Attributes()))
+
+						i.metrics = append(i.metrics, metricRow{
+							ts:    dp.Timestamp().AsTime(),
+							attrs: attrs,
+							name:  metric.Name(),
+							value: dp.DoubleValue(),
+						})
+					}
+				}
 			}
 		}
 	}
+
+	if len(i.metrics) > 100000 {
+		i.metrics = i.metrics[len(i.metrics)-100000:]
+	}
+
 	return nil
+}
+
+func extractAttrs(attrs pcommon.Map) map[string]string {
+	m := make(map[string]string, attrs.Len())
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsString()
+		return true
+	})
+	return m
+}
+
+func mergeAttrs(a, b map[string]string) map[string]string {
+	result := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		result[k] = v
+	}
+	for k, v := range b {
+		result[k] = v
+	}
+	return result
 }
