@@ -63,8 +63,8 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 	}
 	rs.mx = mx
 
-	// ingester holds sliding windows / buffers for the last N seconds
-	ing := newIngester(c)
+	// ingester holds sliding windows / buffers with adaptive memory management
+	ing := newIngesterWithLogger(c, set.Logger)
 
 	// optional TSDB syncer for HA
 	var ts *state.TSDBSyncer
@@ -98,7 +98,7 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 		ing:        ing,
 		mx:         mx,
 		tsdb:       ts,
-		eventBatch: make([]state.AlertEvent, 0, c.TSDB.RemoteWriteBatchSize),
+		eventBatch: make([]state.AlertEvent, 0, getBatchSize(c)),
 		flushChan:  make(chan struct{}, 1),
 		evalStop:   make(chan struct{}),
 	}
@@ -111,6 +111,13 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 	return connector, nil
 }
 
+func getBatchSize(c *Config) int {
+	if c.TSDB != nil && c.TSDB.RemoteWriteBatchSize > 0 {
+		return c.TSDB.RemoteWriteBatchSize
+	}
+	return 1000 // default
+}
+
 // ---- lifecycle --------------------------------------------------------------
 
 func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
@@ -118,6 +125,9 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		zap.String("instance_id", e.cfg.InstanceID),
 		zap.Duration("window_size", e.cfg.WindowSize),
 		zap.Int("num_rules", len(e.cfg.Rules)),
+		zap.Bool("adaptive_scaling_enabled", e.cfg.Memory.EnableAdaptiveScaling),
+		zap.Bool("memory_pressure_handling_enabled", e.cfg.Memory.EnableMemoryPressureHandling),
+		zap.Bool("use_ring_buffers", e.cfg.Memory.UseRingBuffers),
 	)
 
 	interval := e.cfg.Step
@@ -172,6 +182,25 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		}()
 	}
 
+	// Start memory usage reporting goroutine
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		ticker := time.NewTicker(60 * time.Second) // Report every minute
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				e.reportMemoryUsage()
+			case <-e.evalStop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	return nil
 }
 
@@ -193,11 +222,52 @@ func (e *alertsConnector) Shutdown(ctx context.Context) error {
 		e.logger.Warn("Alerts connector shutdown timed out")
 	}
 
+	// Final memory usage report
+	e.reportMemoryUsage()
+
 	return nil
 }
 
 func (e *alertsConnector) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
+}
+
+// reportMemoryUsage logs detailed memory usage statistics
+func (e *alertsConnector) reportMemoryUsage() {
+	if e.ing == nil || e.ing.memMgr == nil {
+		return
+	}
+
+	current, max, percent := e.ing.memMgr.GetMemoryUsage()
+	stats := e.ing.memMgr.GetStats()
+	traceLimit, logLimit, metricLimit := e.ing.memMgr.GetCurrentLimits()
+
+	e.logger.Info("Connector memory usage report",
+		zap.String("instance_id", e.cfg.InstanceID),
+		zap.Int64("memory_current_bytes", current),
+		zap.Int64("memory_max_bytes", max),
+		zap.Float64("memory_usage_percent", percent),
+		zap.Int("traces_buffered", e.ing.traces.Len()),
+		zap.Int("logs_buffered", e.ing.logs.Len()),
+		zap.Int("metrics_buffered", e.ing.metrics.Len()),
+		zap.Int64("trace_limit", traceLimit),
+		zap.Int64("log_limit", logLimit),
+		zap.Int64("metric_limit", metricLimit),
+		zap.Int64("total_dropped_traces", stats.DroppedTraces),
+		zap.Int64("total_dropped_logs", stats.DroppedLogs),
+		zap.Int64("total_dropped_metrics", stats.DroppedMetrics),
+		zap.Int64("scale_up_events", stats.ScaleUpEvents),
+		zap.Int64("scale_down_events", stats.ScaleDownEvents),
+		zap.Int64("memory_pressure_events", stats.MemoryPressureEvents),
+	)
+
+	// Also emit telemetry metrics if available
+	if e.mx != nil {
+		ctx := context.Background()
+		e.mx.RecordMemoryUsage(ctx, current, max, percent)
+		e.mx.RecordBufferSizes(ctx, e.ing.traces.Len(), e.ing.logs.Len(), e.ing.metrics.Len())
+		e.mx.RecordDroppedData(ctx, stats.DroppedTraces, stats.DroppedLogs, stats.DroppedMetrics)
+	}
 }
 
 // ---- evaluation -------------------------------------------------------------
@@ -238,6 +308,15 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 	// Record evaluation metrics
 	if e.mx != nil {
 		e.mx.RecordEvaluation(context.Background(), "all", "success", evalDuration)
+	}
+
+	// Log slow evaluations
+	if evalDuration > 5*time.Second {
+		e.logger.Warn("Slow alert evaluation detected",
+			zap.Duration("duration", evalDuration),
+			zap.Int("events_generated", len(events)),
+			zap.Int("metrics_generated", len(metrics)),
+		)
 	}
 }
 
@@ -313,10 +392,12 @@ func (e *alertsConnector) flushEventBatch() {
 	}
 
 	// Publish to TSDB
+	start := time.Now()
 	if err := e.tsdb.PublishEvents(interfaceEvents); err != nil {
 		e.logger.Warn("Failed to publish events to TSDB",
 			zap.Error(err),
 			zap.Int("event_count", len(eventsToFlush)),
+			zap.Duration("duration", time.Since(start)),
 		)
 		// Record failed events for telemetry
 		if e.mx != nil {
@@ -325,6 +406,7 @@ func (e *alertsConnector) flushEventBatch() {
 	} else {
 		e.logger.Debug("Successfully published events to TSDB",
 			zap.Int("event_count", len(eventsToFlush)),
+			zap.Duration("duration", time.Since(start)),
 		)
 	}
 }

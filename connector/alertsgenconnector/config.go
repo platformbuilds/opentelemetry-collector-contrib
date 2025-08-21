@@ -35,6 +35,39 @@ type Config struct {
 
 	// Notification settings.
 	Notify NotifyConfig `mapstructure:"notify"`
+
+	// Memory management settings.
+	Memory MemoryConfig `mapstructure:"memory"`
+}
+
+// MemoryConfig controls adaptive memory management for high-throughput scenarios
+type MemoryConfig struct {
+	// Maximum total memory usage in bytes (0 = auto-detect based on available memory)
+	MaxMemoryBytes int64 `mapstructure:"max_memory_bytes"`
+
+	// Memory usage as percentage of available system memory (default: 10%)
+	MaxMemoryPercent float64 `mapstructure:"max_memory_percent"`
+
+	// Per-signal buffer limits (0 = auto-calculate)
+	MaxTraceEntries  int `mapstructure:"max_trace_entries"`
+	MaxLogEntries    int `mapstructure:"max_log_entries"`
+	MaxMetricEntries int `mapstructure:"max_metric_entries"`
+
+	// Adaptive scaling settings
+	EnableAdaptiveScaling bool          `mapstructure:"enable_adaptive_scaling"`
+	ScaleUpThreshold      float64       `mapstructure:"scale_up_threshold"`   // Scale up when usage > threshold
+	ScaleDownThreshold    float64       `mapstructure:"scale_down_threshold"` // Scale down when usage < threshold
+	ScaleCheckInterval    time.Duration `mapstructure:"scale_check_interval"`
+	MaxScaleFactor        float64       `mapstructure:"max_scale_factor"` // Maximum buffer size multiplier
+
+	// Memory pressure handling
+	EnableMemoryPressureHandling bool    `mapstructure:"enable_memory_pressure_handling"`
+	MemoryPressureThreshold      float64 `mapstructure:"memory_pressure_threshold"`    // Start dropping data when memory usage > threshold
+	SamplingRateUnderPressure    float64 `mapstructure:"sampling_rate_under_pressure"` // Sample rate when under pressure
+
+	// Ring buffer settings
+	UseRingBuffers      bool `mapstructure:"use_ring_buffers"`      // Use ring buffers instead of slices
+	RingBufferOverwrite bool `mapstructure:"ring_buffer_overwrite"` // Overwrite old data when buffer is full
 }
 
 // TSDBConfig defines TSDB integration for HA and state persistence.
@@ -280,6 +313,22 @@ func CreateDefaultConfig() component.Config {
 				Multiplier:   2.0,
 			},
 		},
+		Memory: MemoryConfig{
+			MaxMemoryPercent:             0.10, // 10% of system memory
+			MaxTraceEntries:              0,    // Auto-calculate
+			MaxLogEntries:                0,    // Auto-calculate
+			MaxMetricEntries:             0,    // Auto-calculate
+			EnableAdaptiveScaling:        true,
+			ScaleUpThreshold:             0.8, // Scale up at 80% usage
+			ScaleDownThreshold:           0.4, // Scale down below 40% usage
+			ScaleCheckInterval:           30 * time.Second,
+			MaxScaleFactor:               10.0, // Allow up to 10x scaling
+			EnableMemoryPressureHandling: true,
+			MemoryPressureThreshold:      0.85,  // Memory pressure at 85%
+			SamplingRateUnderPressure:    0.1,   // 10% sampling under pressure
+			UseRingBuffers:               false, // Use slices by default
+			RingBufferOverwrite:          true,  // Overwrite when full
+		},
 	}
 }
 
@@ -325,6 +374,32 @@ func (c *Config) Validate() error {
 	// Validate dedup config
 	if c.Dedup.Window <= 0 {
 		c.Dedup.Window = 30 * time.Second
+	}
+
+	// Validate memory config
+	if c.Memory.MaxMemoryPercent <= 0 {
+		c.Memory.MaxMemoryPercent = 0.10
+	}
+	if c.Memory.MaxMemoryPercent > 1.0 {
+		return errors.New("memory.max_memory_percent must be <= 1.0")
+	}
+	if c.Memory.ScaleUpThreshold <= 0 || c.Memory.ScaleUpThreshold > 1.0 {
+		return errors.New("memory.scale_up_threshold must be between 0 and 1")
+	}
+	if c.Memory.ScaleDownThreshold <= 0 || c.Memory.ScaleDownThreshold > 1.0 {
+		return errors.New("memory.scale_down_threshold must be between 0 and 1")
+	}
+	if c.Memory.ScaleUpThreshold <= c.Memory.ScaleDownThreshold {
+		return errors.New("memory.scale_up_threshold must be > scale_down_threshold")
+	}
+	if c.Memory.MaxScaleFactor <= 1.0 {
+		return errors.New("memory.max_scale_factor must be > 1.0")
+	}
+	if c.Memory.MemoryPressureThreshold <= 0 || c.Memory.MemoryPressureThreshold > 1.0 {
+		return errors.New("memory.memory_pressure_threshold must be between 0 and 1")
+	}
+	if c.Memory.SamplingRateUnderPressure < 0 || c.Memory.SamplingRateUnderPressure > 1.0 {
+		return errors.New("memory.sampling_rate_under_pressure must be between 0 and 1")
 	}
 
 	// Validate rules
