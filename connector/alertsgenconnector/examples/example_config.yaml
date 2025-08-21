@@ -1,0 +1,368 @@
+# OpenTelemetry Collector Configuration with AlertsGen Connector
+# This example shows a complete HA setup with TSDB integration
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # Export metrics to Prometheus/VictoriaMetrics for TSDB coordination
+  prometheusremotewrite:
+    endpoint: "http://victoriametrics:8428/api/v1/write"
+    add_metric_suffixes: false
+    
+  # Export logs to your log backend
+  logging:
+    loglevel: info
+    
+  # Export original telemetry data
+  otlp/backend:
+    endpoint: "http://jaeger:14250"
+    tls:
+      insecure: true
+
+connectors:
+  alertsgen:
+    # Instance identifier for HA coordination
+    instance_id: "collector-pod-1"
+    
+    # Evaluation window and frequency
+    window: 5s
+    step: 5s
+    
+    # TSDB configuration for HA and state persistence
+    tsdb:
+      # Read endpoint for state recovery (Prometheus/VM compatible)
+      query_url: "http://victoriametrics:8428"
+      
+      # Remote write endpoint for state publishing (enables HA coordination)
+      remote_write_url: "http://victoriametrics:8428/api/v1/write"
+      
+      # Enable remote write for HA coordination
+      enable_remote_write: true
+      
+      # Batch configuration for efficient remote writes
+      remote_write_batch_size: 500
+      remote_write_flush_interval: 10s
+      
+      # Timeouts
+      query_timeout: 30s
+      write_timeout: 15s
+      dedup_window: 60s
+      
+      # Optional authentication
+      username: "otel"
+      password: "secret"
+      
+      # Custom headers
+      headers:
+        X-Scope-OrgID: "tenant1"
+
+    # Deduplication configuration
+    dedup:
+      # Labels used for fingerprinting
+      fingerprint_labels: 
+        - alertname
+        - severity
+        - cluster
+        - namespace
+        - service
+        - instance
+      
+      # Labels to exclude from output (reduce noise)
+      exclude_labels:
+        - pod_ip
+        - container_id
+        - trace_id
+        - span_id
+        - timestamp
+      
+      # Dedup window
+      window: 30s
+      
+      # Enable TSDB-based cross-instance deduplication
+      enable_tsdb_dedup: true
+
+    # Storm protection
+    limits:
+      storm:
+        # Global rate limiting
+        max_transitions_per_minute: 200
+        max_events_per_interval: 100
+        interval: 1s
+        
+        # Circuit breaker
+        circuit_breaker_threshold: 0.7
+        circuit_breaker_recovery_time: 60s
+        
+      cardinality:
+        # Label limits to prevent cardinality explosion
+        max_labels: 25
+        max_label_value_length: 256
+        max_total_label_size: 4096
+        hash_if_exceeds: 128
+        
+        # Series limits per rule
+        max_series_per_rule: 5000
+        
+        # Label sampling for high-cardinality scenarios
+        label_sampling_enabled: true
+        label_sampling_rate: 0.1
+        
+        # Allow/block lists
+        allowlist:
+          - alertname
+          - severity
+          - rule_id
+          - service
+          - cluster
+          - namespace
+        blocklist:
+          - pod_ip
+          - container_id
+          - trace_id
+          - span_id
+
+    # Notification configuration
+    notify:
+      enabled: true
+      timeout: 30s
+      
+      # AlertManager endpoints
+      alertmanager_urls:
+        - "http://alertmanager:9093"
+        - "http://alertmanager-backup:9093"
+      
+      # Custom headers for notifications
+      headers:
+        Authorization: "Bearer token123"
+      
+      # Retry configuration
+      retry:
+        enabled: true
+        max_attempts: 5
+        initial_delay: 2s
+        max_delay: 120s
+        multiplier: 2.0
+
+    # Alert rules
+    rules:
+      # High latency alert for payment service
+      - name: "high_p99_latency_payments"
+        enabled: true
+        signal: traces
+        severity: critical
+        
+        # Select spans from payment services
+        select:
+          service.name: "payment.*|checkout.*"
+          http.method: "POST"
+        
+        # Group by service and route
+        group_by:
+          - service.name
+          - http.route
+          - cluster
+        
+        # Evaluation window and persistence
+        window: 30s
+        step: 15s
+        for: 60s  # Must be high for 1 minute before firing
+        
+        # Expression: P99 latency > 500ms
+        expr:
+          type: latency_quantile_over_time
+          field: duration_ns
+          quantile: 0.99
+          op: ">"
+          value: 500000000  # 500ms in nanoseconds
+        
+        # Custom labels and annotations
+        labels:
+          team: payments
+          runbook: "https://wiki.company.com/runbooks/high-latency"
+        annotations:
+          summary: "High P99 latency detected in {{ $labels.service_name }}"
+          description: "P99 latency is {{ $value | humanizeDuration }} for service {{ $labels.service_name }} on route {{ $labels.http_route }}"
+        
+        # Output configuration
+        outputs:
+          log:
+            enabled: true
+            level: error
+            format: json
+            extra_fields:
+              team: payments
+              priority: high
+          
+          metric:
+            enabled: true
+            name: payment_service_high_latency_active
+            extra_labels:
+              team: payments
+          
+          notify:
+            enabled: true
+            targets:
+              - "http://alertmanager:9093"
+            only_state:
+              - firing  # Only notify on firing, not resolved
+
+      # Error rate alert
+      - name: "high_error_rate"
+        enabled: true
+        signal: traces
+        severity: warning
+        
+        select:
+          service.name: ".*"
+          status.code: "ERROR"
+        
+        group_by:
+          - service.name
+          - cluster
+        
+        window: 5m
+        step: 1m
+        for: 2m
+        
+        expr:
+          type: rate_over_time
+          op: ">"
+          value: 10  # More than 10 errors per evaluation window
+        
+        labels:
+          team: sre
+        annotations:
+          summary: "High error rate in {{ $labels.service_name }}"
+          dashboard: "https://grafana.company.com/d/errors"
+
+      # Log-based alert for critical errors
+      - name: "critical_log_errors"
+        enabled: true
+        signal: logs
+        severity: critical
+        
+        select:
+          severity: "ERROR|FATAL"
+          service.name: "core.*"
+        
+        group_by:
+          - service.name
+          - cluster
+          - namespace
+        
+        window: 1m
+        step: 30s
+        for: 0s  # Fire immediately
+        
+        expr:
+          type: count_over_time
+          op: ">"
+          value: 5  # More than 5 critical errors per minute
+        
+        outputs:
+          notify:
+            enabled: true
+            only_state:
+              - firing
+              - resolved
+
+      # Absence detection for critical services
+      - name: "service_down"
+        enabled: true
+        signal: traces
+        severity: critical
+        
+        select:
+          service.name: "payment|user-auth|core-api"
+        
+        group_by:
+          - service.name
+          - cluster
+        
+        window: 2m
+        step: 1m
+        for: 5m  # Service must be absent for 5 minutes
+        
+        expr:
+          type: absent_over_time
+        
+        labels:
+          team: sre
+          priority: p1
+        annotations:
+          summary: "Service {{ $labels.service_name }} appears to be down"
+          runbook: "https://wiki.company.com/runbooks/service-down"
+
+      # Metric-based alert for high CPU
+      - name: "high_cpu_usage"
+        enabled: true
+        signal: metrics
+        severity: warning
+        
+        select:
+          __name__: "system.cpu.utilization"
+          cpu: ".*"
+        
+        group_by:
+          - host.name
+          - cluster
+        
+        window: 5m
+        step: 1m
+        for: 10m
+        
+        expr:
+          type: avg_over_time
+          field: value
+          op: ">"
+          value: 0.85  # 85% CPU utilization
+        
+        labels:
+          team: infrastructure
+
+service:
+  pipelines:
+    # Traces pipeline with alerting
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [alertsgen, otlp/backend]
+    
+    # Logs pipeline with alerting  
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [alertsgen, logging]
+    
+    # Metrics pipeline with alerting
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [alertsgen, prometheusremotewrite]
+    
+    # Alert output pipelines
+    traces/alerts:
+      receivers: [alertsgen]
+      processors: [batch]
+      exporters: [logging]
+    
+    logs/alerts:
+      receivers: [alertsgen]
+      processors: [batch]  
+      exporters: [logging]
+      
+    metrics/alerts:
+      receivers: [alertsgen]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
