@@ -334,9 +334,9 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		dur := time.Since(start)
 		if rs.mx != nil {
-			rs.mx.RecordEvaluation(ctx, cr.cfg.Name, "success", dur)
+			rs.mx.RecordEvaluation(ctx, dur)
 			if ev := len(events) - evBefore; ev > 0 {
-				rs.mx.RecordEvents(ctx, ev, cr.cfg.Name, cr.severity)
+				rs.mx.RecordEvents(ctx, ev)
 			}
 		}
 	}
@@ -359,9 +359,9 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		dur := time.Since(start)
 		if rs.mx != nil {
-			rs.mx.RecordEvaluation(ctx, cr.cfg.Name, "success", dur)
+			rs.mx.RecordEvaluation(ctx, dur)
 			if ev := len(events) - evBefore; ev > 0 {
-				rs.mx.RecordEvents(ctx, ev, cr.cfg.Name, cr.severity)
+				rs.mx.RecordEvents(ctx, ev)
 			}
 		}
 	}
@@ -384,9 +384,9 @@ func (rs *ruleSet) evaluate(now time.Time, ing *ingester) ([]alertEvent, []state
 
 		dur := time.Since(start)
 		if rs.mx != nil {
-			rs.mx.RecordEvaluation(ctx, cr.cfg.Name, "success", dur)
+			rs.mx.RecordEvaluation(ctx, dur)
 			if ev := len(events) - evBefore; ev > 0 {
-				rs.mx.RecordEvents(ctx, ev, cr.cfg.Name, cr.severity)
+				rs.mx.RecordEvents(ctx, ev)
 			}
 		}
 	}

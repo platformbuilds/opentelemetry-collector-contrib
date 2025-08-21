@@ -264,7 +264,7 @@ func (e *alertsConnector) reportMemoryUsage() {
 	// Also emit telemetry metrics if available
 	if e.mx != nil {
 		ctx := context.Background()
-		e.mx.RecordMemoryUsage(ctx, current, max, percent)
+		e.mx.RecordMemoryUsage(ctx, float64(current), percent)
 		e.mx.RecordBufferSizes(ctx, e.ing.traces.Len(), e.ing.logs.Len(), e.ing.metrics.Len())
 		e.mx.RecordDroppedData(ctx, stats.DroppedTraces, stats.DroppedLogs, stats.DroppedMetrics)
 	}
@@ -292,7 +292,7 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 
 		// Self-telemetry
 		if e.mx != nil {
-			e.mx.RecordEvents(context.Background(), len(events), "all", "n/a")
+			e.mx.RecordEvents(context.Background(), len(events))
 		}
 	}
 
@@ -300,14 +300,14 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 	if e.mx != nil && len(metrics) > 0 {
 		for _, metric := range metrics {
 			if metric.Active > 0 {
-				e.mx.AddActive(context.Background(), 1, metric.Rule, metric.Severity)
+				e.mx.AddActive(context.Background(), 1)
 			}
 		}
 	}
 
 	// Record evaluation metrics
 	if e.mx != nil {
-		e.mx.RecordEvaluation(context.Background(), "all", "success", evalDuration)
+		e.mx.RecordEvaluation(context.Background(), evalDuration)
 	}
 
 	// Log slow evaluations
@@ -401,7 +401,10 @@ func (e *alertsConnector) flushEventBatch() {
 		)
 		// Record failed events for telemetry
 		if e.mx != nil {
-			e.mx.RecordDropped(context.Background(), len(eventsToFlush), "tsdb_publish_failed")
+			// Count how many were dropped
+			e.mx.RecordDroppedData(context.Background(), int64(len(eventsToFlush)), 0, 0)
+			// Also log the reason
+			e.mx.RecordDropped(context.Background(), "tsdb_publish_failed")
 		}
 	} else {
 		e.logger.Debug("Successfully published events to TSDB",
