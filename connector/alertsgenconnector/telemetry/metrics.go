@@ -9,6 +9,7 @@ import (
 )
 
 type Metrics struct {
+	// Core alerting metrics
 	evalTotal     metric.Int64Counter
 	evalDuration  metric.Float64Histogram
 	eventsEmitted metric.Int64Counter
@@ -17,16 +18,13 @@ type Metrics struct {
 	droppedTotal  metric.Int64Counter
 
 	// Memory management metrics
-	memoryUsageBytes   metric.Int64UpDownCounter
+	memoryUsageBytes   metric.Int64Gauge
 	memoryUsagePercent metric.Float64Gauge
-	bufferSizesGauge   metric.Int64UpDownCounter
 	droppedDataCounter metric.Int64Counter
 	scaleEventsCounter metric.Int64Counter
 
 	// Buffer utilization metrics
-	tracesBuffered  metric.Int64UpDownCounter
-	logsBuffered    metric.Int64UpDownCounter
-	metricsBuffered metric.Int64UpDownCounter
+	bufferUtilization metric.Int64Gauge
 }
 
 func New(mp metric.MeterProvider) (*Metrics, error) {
@@ -69,7 +67,7 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 	}
 
 	// Memory management metrics
-	memoryUsageBytes, err := meter.Int64UpDownCounter("otel_alert_memory_usage_bytes",
+	memoryUsageBytes, err := meter.Int64Gauge("otel_alert_memory_usage_bytes",
 		metric.WithDescription("Current memory usage in bytes"))
 	if err != nil {
 		return nil, err
@@ -77,12 +75,6 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 
 	memoryUsagePercent, err := meter.Float64Gauge("otel_alert_memory_usage_percent",
 		metric.WithDescription("Current memory usage as percentage of limit"))
-	if err != nil {
-		return nil, err
-	}
-
-	bufferSizesGauge, err := meter.Int64UpDownCounter("otel_alert_buffer_size",
-		metric.WithDescription("Current buffer sizes by signal type"))
 	if err != nil {
 		return nil, err
 	}
@@ -99,20 +91,8 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		return nil, err
 	}
 
-	tracesBuffered, err := meter.Int64UpDownCounter("otel_alert_traces_buffered",
-		metric.WithDescription("Number of traces currently buffered"))
-	if err != nil {
-		return nil, err
-	}
-
-	logsBuffered, err := meter.Int64UpDownCounter("otel_alert_logs_buffered",
-		metric.WithDescription("Number of logs currently buffered"))
-	if err != nil {
-		return nil, err
-	}
-
-	metricsBuffered, err := meter.Int64UpDownCounter("otel_alert_metrics_buffered",
-		metric.WithDescription("Number of metrics currently buffered"))
+	bufferUtilization, err := meter.Int64Gauge("otel_alert_buffer_utilization",
+		metric.WithDescription("Buffer utilization by signal type"))
 	if err != nil {
 		return nil, err
 	}
@@ -126,16 +106,13 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		droppedTotal:       droppedTotal,
 		memoryUsageBytes:   memoryUsageBytes,
 		memoryUsagePercent: memoryUsagePercent,
-		bufferSizesGauge:   bufferSizesGauge,
 		droppedDataCounter: droppedDataCounter,
 		scaleEventsCounter: scaleEventsCounter,
-		tracesBuffered:     tracesBuffered,
-		logsBuffered:       logsBuffered,
-		metricsBuffered:    metricsBuffered,
+		bufferUtilization:  bufferUtilization,
 	}, nil
 }
 
-// Existing methods
+// Core alerting methods
 func (m *Metrics) RecordEvaluation(ctx context.Context, _ string, _ string, dur time.Duration) {
 	if m == nil {
 		return
@@ -172,12 +149,12 @@ func (m *Metrics) RecordDropped(ctx context.Context, n int, _ string) {
 	m.droppedTotal.Add(ctx, int64(n))
 }
 
-// New memory management methods
+// Memory management methods
 func (m *Metrics) RecordMemoryUsage(ctx context.Context, current, max int64, percent float64) {
 	if m == nil {
 		return
 	}
-	m.memoryUsageBytes.Add(ctx, current-m.getCurrentMemoryUsage())
+	m.memoryUsageBytes.Record(ctx, current)
 	m.memoryUsagePercent.Record(ctx, percent)
 }
 
@@ -186,10 +163,18 @@ func (m *Metrics) RecordBufferSizes(ctx context.Context, traces, logs, metrics i
 		return
 	}
 
-	// Update buffer size counters
-	m.tracesBuffered.Add(ctx, int64(traces-m.getCurrentTracesBuffered()))
-	m.logsBuffered.Add(ctx, int64(logs-m.getCurrentLogsBuffered()))
-	m.metricsBuffered.Add(ctx, int64(metrics-m.getCurrentMetricsBuffered()))
+	// Record buffer utilization for each signal type
+	m.bufferUtilization.Record(ctx, int64(traces), metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("signal_type", "traces"),
+	)))
+
+	m.bufferUtilization.Record(ctx, int64(logs), metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("signal_type", "logs"),
+	)))
+
+	m.bufferUtilization.Record(ctx, int64(metrics), metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("signal_type", "metrics"),
+	)))
 }
 
 func (m *Metrics) RecordDroppedData(ctx context.Context, droppedTraces, droppedLogs, droppedMetrics int64) {
@@ -230,64 +215,6 @@ func (m *Metrics) RecordScaleEvent(ctx context.Context, eventType string, scaleF
 	)))
 }
 
-func (m *Metrics) RecordBufferUtilization(ctx context.Context, signalType string, current, capacity int, utilizationPercent float64) {
-	if m == nil {
-		return
-	}
-
-	m.bufferSizesGauge.Add(ctx, int64(current), metric.WithAttributeSet(attribute.NewSet(
-		attribute.String("signal_type", signalType),
-		attribute.String("metric_type", "current"),
-	)))
-
-	m.bufferSizesGauge.Add(ctx, int64(capacity), metric.WithAttributeSet(attribute.NewSet(
-		attribute.String("signal_type", signalType),
-		attribute.String("metric_type", "capacity"),
-	)))
-}
-
-// Helper methods to track current values (in practice, these would be stored as state)
-func (m *Metrics) getCurrentMemoryUsage() int64 {
-	// This would be stored as internal state in a real implementation
-	return 0
-}
-
-func (m *Metrics) getCurrentTracesBuffered() int {
-	// This would be stored as internal state in a real implementation
-	return 0
-}
-
-func (m *Metrics) getCurrentLogsBuffered() int {
-	// This would be stored as internal state in a real implementation
-	return 0
-}
-
-func (m *Metrics) getCurrentMetricsBuffered() int {
-	// This would be stored as internal state in a real implementation
-	return 0
-}
-
-type Metrics struct {
-	evalTotal     metric.Int64Counter
-	evalDuration  metric.Float64Histogram
-	eventsEmitted metric.Int64Counter
-	notifyTotal   metric.Int64Counter
-	activeGauge   metric.Int64UpDownCounter
-	droppedTotal  metric.Int64Counter
-
-	// Memory management metrics
-	memoryUsageBytes   metric.Int64UpDownCounter
-	memoryUsagePercent metric.Float64Gauge
-	bufferSizesGauge   metric.Int64UpDownCounter
-	droppedDataCounter metric.Int64Counter
-	scaleEventsCounter metric.Int64Counter
-
-	// Buffer utilization metrics
-	tracesBuffered  metric.Int64UpDownCounter
-	logsBuffered    metric.Int64UpDownCounter
-	metricsBuffered metric.Int64UpDownCounter
-}
-
 func New(mp metric.MeterProvider) (*Metrics, error) {
 	meter := mp.Meter("alertsgenconnector")
 
@@ -392,101 +319,6 @@ func New(mp metric.MeterProvider) (*Metrics, error) {
 		logsBuffered:       logsBuffered,
 		metricsBuffered:    metricsBuffered,
 	}, nil
-}
-
-// Existing methods
-func (m *Metrics) RecordEvaluation(ctx context.Context, _ string, _ string, dur time.Duration) {
-	if m == nil {
-		return
-	}
-	m.evalTotal.Add(ctx, 1)
-	m.evalDuration.Record(ctx, dur.Seconds())
-}
-
-func (m *Metrics) RecordEvents(ctx context.Context, n int, _ string, _ string) {
-	if m == nil || n <= 0 {
-		return
-	}
-	m.eventsEmitted.Add(ctx, int64(n))
-}
-
-func (m *Metrics) AddActive(ctx context.Context, delta int, _ string, _ string) {
-	if m == nil || delta == 0 {
-		return
-	}
-	m.activeGauge.Add(ctx, int64(delta))
-}
-
-func (m *Metrics) RecordNotify(ctx context.Context, _ bool) {
-	if m == nil {
-		return
-	}
-	m.notifyTotal.Add(ctx, 1)
-}
-
-func (m *Metrics) RecordDropped(ctx context.Context, n int, _ string) {
-	if m == nil || n <= 0 {
-		return
-	}
-	m.droppedTotal.Add(ctx, int64(n))
-}
-
-// New memory management methods
-func (m *Metrics) RecordMemoryUsage(ctx context.Context, current, max int64, percent float64) {
-	if m == nil {
-		return
-	}
-	m.memoryUsageBytes.Add(ctx, current-m.getCurrentMemoryUsage())
-	m.memoryUsagePercent.Record(ctx, percent)
-}
-
-func (m *Metrics) RecordBufferSizes(ctx context.Context, traces, logs, metrics int) {
-	if m == nil {
-		return
-	}
-
-	// Update buffer size counters
-	m.tracesBuffered.Add(ctx, int64(traces-m.getCurrentTracesBuffered()))
-	m.logsBuffered.Add(ctx, int64(logs-m.getCurrentLogsBuffered()))
-	m.metricsBuffered.Add(ctx, int64(metrics-m.getCurrentMetricsBuffered()))
-}
-
-func (m *Metrics) RecordDroppedData(ctx context.Context, droppedTraces, droppedLogs, droppedMetrics int64) {
-	if m == nil {
-		return
-	}
-
-	if droppedTraces > 0 {
-		m.droppedDataCounter.Add(ctx, droppedTraces, metric.WithAttributes(
-			metric.String("signal_type", "traces"),
-			metric.String("reason", "memory_pressure"),
-		))
-	}
-
-	if droppedLogs > 0 {
-		m.droppedDataCounter.Add(ctx, droppedLogs, metric.WithAttributes(
-			metric.String("signal_type", "logs"),
-			metric.String("reason", "memory_pressure"),
-		))
-	}
-
-	if droppedMetrics > 0 {
-		m.droppedDataCounter.Add(ctx, droppedMetrics, metric.WithAttributes(
-			metric.String("signal_type", "metrics"),
-			metric.String("reason", "memory_pressure"),
-		))
-	}
-}
-
-func (m *Metrics) RecordScaleEvent(ctx context.Context, eventType string, scaleFactor float64) {
-	if m == nil {
-		return
-	}
-
-	m.scaleEventsCounter.Add(ctx, 1, metric.WithAttributes(
-		metric.String("event_type", eventType), // "scale_up", "scale_down", "memory_pressure"
-		metric.Float64("scale_factor", scaleFactor),
-	))
 }
 
 func (m *Metrics) RecordBufferUtilization(ctx context.Context, signalType string, current, capacity int, utilizationPercent float64) {
