@@ -1,4 +1,7 @@
-package telemetry
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package telemetry // import "github.com/open-telemetry/opentelemetry-collector-contrib/connector/alertsgenconnector/telemetry"
 
 import (
 	"context"

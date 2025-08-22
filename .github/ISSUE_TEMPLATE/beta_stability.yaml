@@ -25,6 +25,7 @@ body:
       - confmap/provider/googlesecretmanagerprovider
       - confmap/provider/s3provider
       - confmap/provider/secretsmanagerprovider
+      - connector/alertsgen
       - connector/count
       - connector/datadog
       - connector/exceptions
@@ -182,7 +183,6 @@ body:
       - pkg/translator/zipkin
       - pkg/winperfcounters
       - pkg/xk8stest
-      - processor/alerts
       - processor/attributes
       - processor/coralogix
       - processor/cumulativetodelta
