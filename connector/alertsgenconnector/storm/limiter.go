@@ -28,7 +28,7 @@ func New(maxTPM, maxPerInterval int, interval time.Duration) *Limiter {
 }
 
 // Allow returns how many events can be processed (may be less than n).
-func (l *Limiter) Allow(n int) (allow int, dropped int) {
+func (l *Limiter) Allow(n int) (allow, dropped int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

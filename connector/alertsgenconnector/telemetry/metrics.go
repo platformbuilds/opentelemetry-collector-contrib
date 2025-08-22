@@ -152,7 +152,7 @@ func (m *Metrics) RecordDropped(ctx context.Context, reason string) {
 		metric.WithAttributes(attribute.String("reason", reason)))
 }
 
-func (m *Metrics) RecordMemoryUsage(ctx context.Context, current float64, percent float64) {
+func (m *Metrics) RecordMemoryUsage(ctx context.Context, current, percent float64) {
 	if m == nil {
 		return
 	}

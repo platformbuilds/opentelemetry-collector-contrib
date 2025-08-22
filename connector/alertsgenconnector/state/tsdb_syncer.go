@@ -487,11 +487,13 @@ func (f *fnv64a) WriteByte(b byte) error {
 	f.sum *= 1099511628211
 	return nil
 }
+
 func (f *fnv64a) WriteString(s string) {
 	for i := 0; i < len(s); i++ {
 		_ = f.WriteByte(s[i])
 	}
 }
+
 func (f *fnv64a) Sum64() uint64 {
 	if f.sum == 0 {
 		return 1469598103934665603

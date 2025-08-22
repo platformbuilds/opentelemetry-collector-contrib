@@ -174,12 +174,14 @@ func (e *exprAvg) evaluateTrace(rows []traceRow) (float64, bool) {
 	}
 	return sum / float64(len(rows)), true
 }
+
 func (e *exprAvg) evaluateLog(rows []logRow) (float64, bool) {
 	if len(rows) == 0 {
 		return 0, false
 	}
 	return float64(len(rows)), true
 }
+
 func (e *exprAvg) evaluateMetric(rows []metricRow) (float64, bool) {
 	if len(rows) == 0 {
 		return 0, false
@@ -201,9 +203,11 @@ func (e *exprRate) kind() string { return "rate" }
 func (e *exprRate) evaluateTrace(rows []traceRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
+
 func (e *exprRate) evaluateLog(rows []logRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
+
 func (e *exprRate) evaluateMetric(rows []metricRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
@@ -218,9 +222,11 @@ func (e *exprCount) kind() string { return "count" }
 func (e *exprCount) evaluateTrace(rows []traceRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
+
 func (e *exprCount) evaluateLog(rows []logRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
+
 func (e *exprCount) evaluateMetric(rows []metricRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
@@ -252,9 +258,11 @@ func (e *exprQuantile) evaluateTrace(rows []traceRow) (float64, bool) {
 	}
 	return vals[idx], true
 }
+
 func (e *exprQuantile) evaluateLog(rows []logRow) (float64, bool) {
 	return float64(len(rows)), len(rows) > 0
 }
+
 func (e *exprQuantile) evaluateMetric(rows []metricRow) (float64, bool) {
 	if len(rows) == 0 {
 		return 0, false
@@ -410,6 +418,7 @@ func filterWindowTr(rows []traceRow, now time.Time, w time.Duration) []traceRow 
 	}
 	return out
 }
+
 func filterWindowLg(rows []logRow, now time.Time, w time.Duration) []logRow {
 	if w <= 0 {
 		return rows
@@ -423,6 +432,7 @@ func filterWindowLg(rows []logRow, now time.Time, w time.Duration) []logRow {
 	}
 	return out
 }
+
 func filterWindowMt(rows []metricRow, now time.Time, w time.Duration) []metricRow {
 	if w <= 0 {
 		return rows
@@ -449,6 +459,7 @@ func filterTraceRows(rows []traceRow, sel map[string]*regexp.Regexp) []traceRow 
 	}
 	return out
 }
+
 func filterLogRows(rows []logRow, sel map[string]*regexp.Regexp) []logRow {
 	if len(sel) == 0 {
 		return rows
@@ -461,6 +472,7 @@ func filterLogRows(rows []logRow, sel map[string]*regexp.Regexp) []logRow {
 	}
 	return out
 }
+
 func filterMetricRows(rows []metricRow, sel map[string]*regexp.Regexp) []metricRow {
 	if len(sel) == 0 {
 		return rows
