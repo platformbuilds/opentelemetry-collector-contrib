@@ -15,6 +15,16 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumertest"
 )
 
+// minimal TSDB wiring for tests that expect success
+func testTSDBCfg() *TSDBConfig {
+	return &TSDBConfig{
+		// These values are not used to contact a live system during unit tests;
+		// they just indicate TSDB is configured.
+		QueryURL:     "http://prometheus:9090",
+		QueryTimeout: 5 * time.Second,
+	}
+}
+
 func TestNewFactory(t *testing.T) {
 	factory := NewFactory()
 	require.NotNil(t, factory)
@@ -29,9 +39,12 @@ func TestNewFactory(t *testing.T) {
 
 func TestCreateTracesToLogs(t *testing.T) {
 	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
 	ctx := context.Background()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+
+	// Default config + TSDB (mandatory for HA sync)
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.TSDB = testTSDBCfg()
 
 	// Create logs consumer
 	logsConsumer := consumertest.NewNop()
@@ -51,9 +64,12 @@ func TestCreateTracesToLogs(t *testing.T) {
 
 func TestCreateMetricsToLogs(t *testing.T) {
 	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
 	ctx := context.Background()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+
+	// Default config + TSDB (mandatory for HA sync)
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.TSDB = testTSDBCfg()
 
 	// Create logs consumer
 	logsConsumer := consumertest.NewNop()
@@ -73,9 +89,12 @@ func TestCreateMetricsToLogs(t *testing.T) {
 
 func TestCreateMetricsToMetrics(t *testing.T) {
 	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
 	ctx := context.Background()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+
+	// Default config + TSDB (mandatory for HA sync)
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.TSDB = testTSDBCfg()
 
 	// Create metrics consumer
 	metricsConsumer := consumertest.NewNop()
@@ -96,7 +115,7 @@ func TestCreateMetricsToMetrics(t *testing.T) {
 func TestCreateWithInvalidConfig(t *testing.T) {
 	factory := NewFactory()
 	ctx := context.Background()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 
 	// Invalid config (missing TSDB)
 	cfg := &Config{
@@ -133,9 +152,12 @@ func TestFactoryType(t *testing.T) {
 
 func TestFactoryCapabilities(t *testing.T) {
 	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
 	ctx := context.Background()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+
+	// Default config + TSDB (mandatory for HA sync)
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.TSDB = testTSDBCfg()
 
 	// Create a connector
 	conn, err := factory.CreateTracesToLogs(ctx, set, cfg, consumertest.NewNop())

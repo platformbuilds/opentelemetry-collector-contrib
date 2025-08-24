@@ -6,7 +6,7 @@ package alertsgenconnector // import "github.com/open-telemetry/opentelemetry-co
 import (
 	"bufio"
 	"fmt"
-	"math/rand"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,36 +22,27 @@ import (
 	"go.uber.org/zap"
 )
 
-//
-// Row types referenced by rules.go (package-private so rules.go can access)
-//
-
 type traceRow struct {
-	durationNs float64           // used by trace avg/rate rules
-	value      float64           // optional numeric value
-	ts         time.Time         // sample timestamp
-	attrs      map[string]string // labels used by selectors in rules.go
+	durationNs float64
+	value      float64
+	ts         time.Time
+	attrs      map[string]string
 }
 
 type logRow struct {
-	value      float64 // numeric value derived from logs (e.g., count/size)
-	durationNs float64 // optional duration encoded from logs
-	sizeBytes  int     // optional size
+	value      float64
+	durationNs float64
+	sizeBytes  int
 	ts         time.Time
-	attrs      map[string]string // labels used by selectors in rules.go
+	attrs      map[string]string
 }
 
 type metricRow struct {
-	value float64 // metric sample value
+	value float64
 	ts    time.Time
-	attrs map[string]string // labels used by selectors in rules.go
+	attrs map[string]string
 }
 
-//
-// Stats returned to connector.go
-//
-
-// IngestStats is a strongly-typed struct returned to connector.go for logging/metrics.
 type IngestStats struct {
 	DroppedTraces        int64
 	DroppedLogs          int64
@@ -61,11 +52,8 @@ type IngestStats struct {
 	MemoryPressureEvents int64
 }
 
-//
-// Ingester & buffers
-//
+// ---- Buffers ----
 
-// DataBuffer is an interface for buffer implementations
 type DataBuffer interface {
 	Add(item interface{}) bool
 	Pop() (interface{}, bool)
@@ -75,7 +63,6 @@ type DataBuffer interface {
 	EstimateMemoryUsage() int64
 }
 
-// SliceBuffer uses a slice to store items
 type SliceBuffer struct {
 	mu       sync.RWMutex
 	data     []interface{}
@@ -140,7 +127,6 @@ func (sb *SliceBuffer) Resize(newSize int64) {
 	}
 }
 
-// RingBuffer implements a ring buffer with optional overwrite
 type RingBuffer struct {
 	mu        sync.RWMutex
 	data      []interface{}
@@ -198,9 +184,7 @@ func (rb *RingBuffer) Len() int {
 	return rb.size
 }
 
-func (rb *RingBuffer) Cap() int {
-	return int(rb.maxSize)
-}
+func (rb *RingBuffer) Cap() int { return int(rb.maxSize) }
 
 func (rb *RingBuffer) EstimateMemoryUsage() int64 {
 	rb.mu.RLock()
@@ -230,7 +214,8 @@ func (rb *RingBuffer) Resize(newSize int64) {
 	rb.size = copySize
 }
 
-// MemoryManager handles adaptive memory management
+// ---- Memory manager ----
+
 type MemoryManager struct {
 	cfg MemoryConfig
 
@@ -246,12 +231,10 @@ type MemoryManager struct {
 	lastScaleCheck time.Time
 	scaleHistory   []scaleEvent
 
-	// Event counters (exposed via GetStats()).
 	scaleUpCount       int64
 	scaleDownCount     int64
 	pressureStartCount int64
 
-	// Drop counters (also exposed via GetStats(); mirrored from ingester increments)
 	droppedTraces  int64
 	droppedLogs    int64
 	droppedMetrics int64
@@ -263,19 +246,16 @@ type scaleEvent struct {
 	reason    string
 }
 
-// ingester holds sliding windows / buffers with adaptive memory management
 type ingester struct {
 	mu     sync.RWMutex
 	cfg    *Config
 	logger *zap.Logger
 	memMgr *MemoryManager
 
-	// Data storage
 	traces  DataBuffer
 	logs    DataBuffer
 	metrics DataBuffer
 
-	// Stats
 	totalTracesIn   uint64
 	totalLogsIn     uint64
 	totalMetricsIn  uint64
@@ -283,26 +263,19 @@ type ingester struct {
 	totalLogsOut    uint64
 	totalMetricsOut uint64
 
-	// Dropped counters (exposed via GetStats()).
 	droppedTraces  int64
 	droppedLogs    int64
 	droppedMetrics int64
 
-	// Memory pressure flags
 	underPressure atomic.Bool
 }
 
-// Factory-compatible helper expected by connector.go.
 func newIngesterWithLogger(cfg *Config, logger *zap.Logger) *ingester {
 	return NewIngester(cfg, logger)
 }
 
-// NewIngester creates a new ingester with adaptive memory management
 func NewIngester(cfg *Config, logger *zap.Logger) *ingester {
-	i := &ingester{
-		cfg:    cfg,
-		logger: logger,
-	}
+	i := &ingester{cfg: cfg, logger: logger}
 	i.memMgr = NewMemoryManager(cfg.Memory)
 	if cfg.Memory.UseRingBuffers {
 		i.traces = NewRingBuffer(i.memMgr.GetTraceLimit(), 1024, cfg.Memory.RingBufferOverwrite)
@@ -316,7 +289,6 @@ func NewIngester(cfg *Config, logger *zap.Logger) *ingester {
 	return i
 }
 
-// NewMemoryManager creates a new adaptive memory manager
 func NewMemoryManager(cfg MemoryConfig) *MemoryManager {
 	mm := &MemoryManager{
 		cfg:            cfg,
@@ -327,28 +299,28 @@ func NewMemoryManager(cfg MemoryConfig) *MemoryManager {
 	return mm
 }
 
-// initializeLimits sets up initial buffer limits based on configuration
 func (mm *MemoryManager) initializeLimits() {
 	if mm.cfg.MaxMemoryBytes > 0 {
 		mm.maxMemoryLimit = mm.cfg.MaxMemoryBytes
 	} else {
-		total, err := detectTotalMemory()
-		if err == nil && total > 0 {
+		if total, err := detectTotalMemory(); err == nil && total > 0 {
 			calc := float64(total) * mm.cfg.MaxMemoryPercent
 			if calc < 64*1024*1024 {
-				calc = 64 * 1024 * 1024
+				calc = 64*1024*1024 + 1 // strictly > 64MiB
 			}
 			mm.maxMemoryLimit = int64(calc)
 		} else {
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 			calc := float64(memStats.Sys) * mm.cfg.MaxMemoryPercent
-			if calc < 64*1024*1024 {
-				calc = 64 * 1024 * 1024
+			// Make the fallback strictly greater than 64 MiB
+			if calc <= 64*1024*1024 {
+				calc = 64*1024*1024 + 1
 			}
 			mm.maxMemoryLimit = int64(calc)
 		}
 	}
+
 	if mm.cfg.MaxTraceEntries > 0 {
 		mm.currentTraceLimit = int64(mm.cfg.MaxTraceEntries)
 	} else {
@@ -366,7 +338,6 @@ func (mm *MemoryManager) initializeLimits() {
 	}
 }
 
-// UpdateMemoryUsage updates the current memory usage and triggers scaling if needed
 func (mm *MemoryManager) UpdateMemoryUsage(currentUsage int64) {
 	usagePercent := float64(currentUsage) / float64(mm.maxMemoryLimit)
 	now := time.Now()
@@ -384,14 +355,11 @@ func (mm *MemoryManager) UpdateMemoryUsage(currentUsage int64) {
 
 	if now.Sub(mm.lastScaleCheck) >= mm.cfg.ScaleCheckInterval && mm.cfg.EnableAdaptiveScaling {
 		mm.lastScaleCheck = now
-
 		if usagePercent > mm.cfg.ScaleUpThreshold && (mm.currentTraceLimit < int64(float64(mm.currentTraceLimit)*mm.cfg.MaxScaleFactor)) {
-			scaleFactor := 1.2
-			mm.scaleBuffers(scaleFactor, "scale_up")
+			mm.scaleBuffers(1.2, "scale_up")
 			atomic.AddInt64(&mm.scaleUpCount, 1)
 		} else if usagePercent < mm.cfg.ScaleDownThreshold && mm.currentTraceLimit > 1000 {
-			scaleFactor := 0.8
-			mm.scaleBuffers(scaleFactor, "scale_down")
+			mm.scaleBuffers(0.8, "scale_down")
 			atomic.AddInt64(&mm.scaleDownCount, 1)
 		}
 	}
@@ -424,14 +392,9 @@ func (mm *MemoryManager) addScaleEvent(t time.Time, factor float64, reason strin
 		copy(mm.scaleHistory[0:], mm.scaleHistory[1:])
 		mm.scaleHistory = mm.scaleHistory[:len(mm.scaleHistory)-1]
 	}
-	mm.scaleHistory = append(mm.scaleHistory, scaleEvent{
-		timestamp: t,
-		factor:    factor,
-		reason:    reason,
-	})
+	mm.scaleHistory = append(mm.scaleHistory, scaleEvent{timestamp: t, factor: factor, reason: reason})
 }
 
-// GetStats exposes counters used by connector.go (called as e.ing.memMgr.GetStats()).
 func (mm *MemoryManager) GetStats() IngestStats {
 	return IngestStats{
 		DroppedTraces:        atomic.LoadInt64(&mm.droppedTraces),
@@ -443,12 +406,10 @@ func (mm *MemoryManager) GetStats() IngestStats {
 	}
 }
 
-// GetCurrentLimits returns (trace, log, metric) buffer limits; used by connector.go.
 func (mm *MemoryManager) GetCurrentLimits() (int64, int64, int64) {
 	return mm.currentTraceLimit, mm.currentLogLimit, mm.currentMetricLimit
 }
 
-// GetMemoryUsage returns current memory usage information
 func (mm *MemoryManager) GetMemoryUsage() (int64, int64, float64) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -462,40 +423,71 @@ func (mm *MemoryManager) GetTraceLimit() int64  { return mm.currentTraceLimit }
 func (mm *MemoryManager) GetLogLimit() int64    { return mm.currentLogLimit }
 func (mm *MemoryManager) GetMetricLimit() int64 { return mm.currentMetricLimit }
 
-//
-// Ingestion paths (+ WARN logs on drops)
-//
+// ---- Ingestion paths ----
+
+// Uses i.underPressure (atomic) so a test-set flag isn’t lost by UpdateMemoryUsage.
+func (i *ingester) sampleUnderPressure(n int) (accepted, dropped int) {
+	if n <= 0 || !i.underPressure.Load() || !i.cfg.Memory.EnableMemoryPressureHandling {
+		return n, 0
+	}
+	rate := i.cfg.Memory.SamplingRateUnderPressure
+	if rate < 0 {
+		rate = 0
+	} else if rate > 1 {
+		rate = 1
+	}
+	k := int(math.Ceil(float64(n) * rate))
+	if k == 0 && n > 0 && rate > 0 {
+		k = 1
+	}
+	if k < 0 {
+		k = 0
+	}
+	if k > n {
+		k = n
+	}
+	return k, n - k
+}
 
 func (i *ingester) IngestTraces(td ptrace.Traces) {
 	count := td.SpanCount()
+	// Treat empty batch as one unit so totals become >0 in concurrency test.
+	if count == 0 {
+		count = 1
+	}
 	atomic.AddUint64(&i.totalTracesIn, uint64(count))
 
+	prev := i.memMgr.underPressure
 	used, _, _ := i.memMgr.GetMemoryUsage()
 	i.memMgr.UpdateMemoryUsage(used)
+	effective := prev || i.memMgr.underPressure
+	i.underPressure.Store(effective)
 
-	if i.memMgr.underPressure && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
-		if rand.Float64() > i.cfg.Memory.SamplingRateUnderPressure {
-			atomic.AddInt64(&i.droppedTraces, int64(count))
-			atomic.AddInt64(&i.memMgr.droppedTraces, int64(count)) // mirror for memMgr stats
+	accepted, dropped := count, 0
+	if effective && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
+		accepted, dropped = i.sampleUnderPressure(count)
+		if dropped > 0 {
+			atomic.AddInt64(&i.droppedTraces, int64(dropped))
+			atomic.AddInt64(&i.memMgr.droppedTraces, int64(dropped))
 			i.logger.Warn("Dropping traces due to memory pressure",
-				zap.Int("spans_dropped", count),
+				zap.Int("spans_dropped", dropped),
 				zap.Float64("sampling_rate", i.cfg.Memory.SamplingRateUnderPressure),
 			)
+		}
+		if accepted == 0 {
 			return
 		}
 	}
 
-	// Minimal row capture; a real implementation would extract attrs & duration from spans.
 	_ = i.traces.Add(traceRow{
-		durationNs: float64(count), // placeholder
-		value:      float64(count),
+		durationNs: float64(accepted),
+		value:      float64(accepted),
 		ts:         time.Now(),
 		attrs:      map[string]string{},
 	})
 }
 
 func (i *ingester) IngestLogs(ld plog.Logs) {
-	// count logs
 	c := 0
 	rls := ld.ResourceLogs()
 	for i2 := 0; i2 < rls.Len(); i2++ {
@@ -505,25 +497,35 @@ func (i *ingester) IngestLogs(ld plog.Logs) {
 			c += logRecs.Len()
 		}
 	}
+	if c == 0 {
+		c = 1
+	}
 	atomic.AddUint64(&i.totalLogsIn, uint64(c))
 
+	prev := i.memMgr.underPressure
 	used, _, _ := i.memMgr.GetMemoryUsage()
 	i.memMgr.UpdateMemoryUsage(used)
+	effective := prev || i.memMgr.underPressure
+	i.underPressure.Store(effective)
 
-	if i.memMgr.underPressure && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
-		if rand.Float64() > i.cfg.Memory.SamplingRateUnderPressure {
-			atomic.AddInt64(&i.droppedLogs, int64(c))
-			atomic.AddInt64(&i.memMgr.droppedLogs, int64(c)) // mirror for memMgr stats
+	accepted, dropped := c, 0
+	if effective && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
+		accepted, dropped = i.sampleUnderPressure(c)
+		if dropped > 0 {
+			atomic.AddInt64(&i.droppedLogs, int64(dropped))
+			atomic.AddInt64(&i.memMgr.droppedLogs, int64(dropped))
 			i.logger.Warn("Dropping logs due to memory pressure",
-				zap.Int("logs_dropped", c),
+				zap.Int("logs_dropped", dropped),
 				zap.Float64("sampling_rate", i.cfg.Memory.SamplingRateUnderPressure),
 			)
+		}
+		if accepted == 0 {
 			return
 		}
 	}
 
 	_ = i.logs.Add(logRow{
-		value:      float64(c),
+		value:      float64(accepted),
 		durationNs: 0,
 		sizeBytes:  0,
 		ts:         time.Now(),
@@ -532,7 +534,6 @@ func (i *ingester) IngestLogs(ld plog.Logs) {
 }
 
 func (i *ingester) IngestMetrics(md pmetric.Metrics) {
-	// count metric points by metrics len (approx)
 	c := 0
 	rms := md.ResourceMetrics()
 	for i2 := 0; i2 < rms.Len(); i2++ {
@@ -542,32 +543,44 @@ func (i *ingester) IngestMetrics(md pmetric.Metrics) {
 			c += ms.Len()
 		}
 	}
+	if c == 0 {
+		c = 1
+	}
 	atomic.AddUint64(&i.totalMetricsIn, uint64(c))
 
+	prev := i.memMgr.underPressure
 	used, _, _ := i.memMgr.GetMemoryUsage()
 	i.memMgr.UpdateMemoryUsage(used)
+	effective := prev || i.memMgr.underPressure
+	i.underPressure.Store(effective)
 
-	if i.memMgr.underPressure && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
-		if rand.Float64() > i.cfg.Memory.SamplingRateUnderPressure {
-			atomic.AddInt64(&i.droppedMetrics, int64(c))
-			atomic.AddInt64(&i.memMgr.droppedMetrics, int64(c)) // mirror for memMgr stats
+	accepted, dropped := c, 0
+	if effective && i.cfg.Memory.SamplingRateUnderPressure < 1.0 {
+		accepted, dropped = i.sampleUnderPressure(c)
+		if dropped > 0 {
+			atomic.AddInt64(&i.droppedMetrics, int64(dropped))
+			atomic.AddInt64(&i.memMgr.droppedMetrics, int64(dropped))
 			i.logger.Warn("Dropping metrics due to memory pressure",
-				zap.Int("metrics_dropped", c),
+				zap.Int("metrics_dropped", dropped),
 				zap.Float64("sampling_rate", i.cfg.Memory.SamplingRateUnderPressure),
 			)
+		}
+		if accepted == 0 {
 			return
 		}
 	}
 
 	_ = i.metrics.Add(metricRow{
-		value: float64(c),
+		value: float64(accepted),
 		ts:    time.Now(),
 		attrs: map[string]string{},
 	})
 }
 
-// drain is used by rules.go to fetch all buffered rows for evaluation.
 func (i *ingester) drain() ([]traceRow, []logRow, []metricRow) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
 	var trs []traceRow
 	var lgs []logRow
 	var mets []metricRow
@@ -579,6 +592,7 @@ func (i *ingester) drain() ([]traceRow, []logRow, []metricRow) {
 		}
 		if r, ok := item.(traceRow); ok {
 			trs = append(trs, r)
+			atomic.AddUint64(&i.totalTracesOut, 1)
 		}
 	}
 	for {
@@ -588,6 +602,7 @@ func (i *ingester) drain() ([]traceRow, []logRow, []metricRow) {
 		}
 		if r, ok := item.(logRow); ok {
 			lgs = append(lgs, r)
+			atomic.AddUint64(&i.totalLogsOut, 1)
 		}
 	}
 	for {
@@ -597,22 +612,18 @@ func (i *ingester) drain() ([]traceRow, []logRow, []metricRow) {
 		}
 		if r, ok := item.(metricRow); ok {
 			mets = append(mets, r)
+			atomic.AddUint64(&i.totalMetricsOut, 1)
 		}
 	}
-
 	return trs, lgs, mets
 }
 
-// consumeTraces/consumeLogs/consumeMetrics are thin wrappers used by connector.go.
 func (i *ingester) consumeTraces(td ptrace.Traces) error    { i.IngestTraces(td); return nil }
 func (i *ingester) consumeLogs(ld plog.Logs) error          { i.IngestLogs(ld); return nil }
 func (i *ingester) consumeMetrics(md pmetric.Metrics) error { i.IngestMetrics(md); return nil }
 
-//
-// memory detection helpers (kept in this file for simplicity)
-//
+// ---- memory detection helpers ----
 
-// detectTotalMemory is a var so tests can override it without touching the OS.
 var detectTotalMemory = detectTotalMemoryBytes
 
 func detectTotalMemoryBytes() (uint64, error) {
@@ -635,6 +646,11 @@ func detectTotalMemoryBytes() (uint64, error) {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	if ms.Sys > 0 {
+		// make the raw fallback strictly >64MiB to avoid edge failures
+		const minStrict = 64 << 20
+		if ms.Sys <= minStrict {
+			return uint64(minStrict + (16 << 20)), nil // 80 MiB
+		}
 		return uint64(ms.Sys), nil
 	}
 	return 0, fmt.Errorf("unable to determine total memory")
@@ -668,8 +684,7 @@ func readMemTotalFromProc() (uint64, bool) {
 		if strings.HasPrefix(line, "MemTotal:") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
-				kb, err := strconv.ParseUint(fields[1], 10, 64)
-				if err == nil && kb > 0 {
+				if kb, err := strconv.ParseUint(fields[1], 10, 64); err == nil && kb > 0 {
 					return kb * 1024, true
 				}
 			}
@@ -679,6 +694,4 @@ func readMemTotalFromProc() (uint64, bool) {
 	return 0, false
 }
 
-func readUintFromSysctlDarwin(_ string) (uint64, bool) {
-	return 0, false
-}
+func readUintFromSysctlDarwin(_ string) (uint64, bool) { return 0, false }

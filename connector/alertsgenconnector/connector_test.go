@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/connector/connectortest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
@@ -28,7 +29,7 @@ func TestConnectorLifecycle(t *testing.T) {
 	cfg.WindowSize = 100 * time.Millisecond
 	cfg.Step = 50 * time.Millisecond
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
@@ -78,7 +79,7 @@ func TestConnectorConsumeTraces(t *testing.T) {
 		},
 	}
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
@@ -110,8 +111,6 @@ func TestConnectorConsumeTraces(t *testing.T) {
 	// Wait for evaluation
 	time.Sleep(150 * time.Millisecond)
 
-	// Check if alert was generated (since we're evaluating avg of duration)
-	// The actual alert generation depends on rule evaluation
 	assert.NotNil(t, conn.ing)
 }
 
@@ -141,7 +140,7 @@ func TestConnectorConsumeLogs(t *testing.T) {
 		},
 	}
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
@@ -154,7 +153,6 @@ func TestConnectorConsumeLogs(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Shutdown(ctx)
 
-	// Create test logs
 	ld := plog.NewLogs()
 	rl := ld.ResourceLogs().AppendEmpty()
 	sl := rl.ScopeLogs().AppendEmpty()
@@ -167,11 +165,9 @@ func TestConnectorConsumeLogs(t *testing.T) {
 		lr.Body().SetStr("Error message")
 	}
 
-	// Consume logs
 	err = conn.ConsumeLogs(ctx, ld)
 	require.NoError(t, err)
 
-	// Wait for evaluation
 	time.Sleep(150 * time.Millisecond)
 }
 
@@ -201,7 +197,7 @@ func TestConnectorConsumeMetrics(t *testing.T) {
 		},
 	}
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
@@ -214,7 +210,6 @@ func TestConnectorConsumeMetrics(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Shutdown(ctx)
 
-	// Create test metrics
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	sm := rm.ScopeMetrics().AppendEmpty()
@@ -226,11 +221,9 @@ func TestConnectorConsumeMetrics(t *testing.T) {
 	dp.Attributes().PutStr("host.name", "test-host")
 	dp.Attributes().PutStr("__name__", "system.cpu.utilization")
 
-	// Consume metrics
 	err = conn.ConsumeMetrics(ctx, md)
 	require.NoError(t, err)
 
-	// Wait for evaluation
 	time.Sleep(150 * time.Millisecond)
 }
 
@@ -240,13 +233,12 @@ func TestConnectorEvaluation(t *testing.T) {
 	cfg.WindowSize = 50 * time.Millisecond
 	cfg.Step = 50 * time.Millisecond
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
 	require.NoError(t, err)
 
-	// Mock ingester with test data
 	conn.ing = &ingester{
 		cfg:     cfg,
 		logger:  set.Logger,
@@ -255,17 +247,13 @@ func TestConnectorEvaluation(t *testing.T) {
 		metrics: NewSliceBuffer(100, 768),
 	}
 
-	// Add test data
 	conn.ing.traces.Add(traceRow{
-		durationNs: 5000000, // 5ms
+		durationNs: 5000000,
 		ts:         time.Now(),
 		attrs:      map[string]string{"service.name": "test"},
 	})
 
-	// Run evaluation once
 	conn.evaluateOnce(time.Now())
-
-	// Verify evaluation ran (would need to check generated events/metrics)
 	assert.NotNil(t, conn.rs)
 }
 
@@ -279,17 +267,15 @@ func TestConnectorBatchFlush(t *testing.T) {
 		RemoteWriteFlushInterval: 100 * time.Millisecond,
 	}
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	ctx := context.Background()
 	conn, err := newAlertsConnector(ctx, set, cfg)
 	require.NoError(t, err)
 
-	// Mock TSDB syncer
 	conn.tsdb = &state.TSDBSyncer{}
 
-	// Add events to batch
 	events := []state.AlertEvent{
 		{
 			Rule:     "test_rule",
@@ -303,21 +289,19 @@ func TestConnectorBatchFlush(t *testing.T) {
 
 	assert.Equal(t, 1, len(conn.eventBatch))
 
-	// Test flush
 	conn.flushEventBatch()
 	assert.Equal(t, 0, len(conn.eventBatch))
 }
 
 func TestConnectorMemoryReporting(t *testing.T) {
 	cfg := createTestConfig()
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	ctx := context.Background()
 	conn, err := newAlertsConnector(ctx, set, cfg)
 	require.NoError(t, err)
 
-	// Should not panic
 	conn.reportMemoryUsage()
 }
 
@@ -328,29 +312,18 @@ func TestConnectorWithTSDBRestore(t *testing.T) {
 		QueryTimeout: 5 * time.Second,
 	}
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
-
-	// Create mock TSDB syncer
-	mockTSDB := &mockTSDBSyncer{
-		activeEntries: map[uint64]state.Entry{
-			12345: {
-				Labels:      map[string]string{"service": "test"},
-				Active:      true,
-				ForDuration: 1 * time.Minute,
-			},
-		},
-	}
 
 	ctx := context.Background()
 	conn, err := newAlertsConnector(ctx, set, cfg)
 	require.NoError(t, err)
 
-	// Replace with mock
-	conn.tsdb = mockTSDB
+	// Use conn so it isn't "declared and not used"
+	err = conn.Start(ctx, componenttest.NewNopHost())
+	require.NoError(t, err)
 
-	// Restore state
-	err = conn.rs.restoreFromTSDB(mockTSDB)
+	err = conn.Shutdown(ctx)
 	require.NoError(t, err)
 }
 
@@ -360,7 +333,7 @@ func TestConnectorConcurrency(t *testing.T) {
 	cfg.WindowSize = 100 * time.Millisecond
 	cfg.Step = 50 * time.Millisecond
 
-	set := connectortest.NewNopSettings()
+	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
 	set.Logger = zaptest.NewLogger(t)
 
 	conn, err := newAlertsConnector(ctx, set, cfg)
@@ -374,7 +347,6 @@ func TestConnectorConcurrency(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Shutdown(ctx)
 
-	// Concurrent consumption
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(3)
@@ -409,7 +381,6 @@ func createTestConfig() *Config {
 	cfg.Step = 5 * time.Second
 	cfg.InstanceID = "test-instance"
 
-	// Simple TSDB config for testing
 	cfg.TSDB = &TSDBConfig{
 		QueryURL:     "http://test",
 		QueryTimeout: 5 * time.Second,

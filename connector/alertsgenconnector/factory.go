@@ -5,6 +5,7 @@ package alertsgenconnector // import "github.com/open-telemetry/opentelemetry-co
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/connector"
@@ -20,11 +21,8 @@ func NewFactory() connector.Factory {
 	return connector.NewFactory(
 		component.MustNewType(typeStr),
 		CreateDefaultConfig,
-		// Enable traces -> logs
 		connector.WithTracesToLogs(createTracesToLogs, component.StabilityLevelAlpha),
-		// Enable metrics -> logs
 		connector.WithMetricsToLogs(createMetricsToLogs, component.StabilityLevelAlpha),
-		// Keep metrics -> metrics if your connector uses it elsewhere
 		connector.WithMetricsToMetrics(createMetricsToMetrics, component.StabilityLevelAlpha),
 	)
 }
@@ -39,6 +37,10 @@ func createTracesToLogs(
 	ac, err := newAlertsConnector(ctx, set, cfg)
 	if err != nil {
 		return nil, err
+	}
+	// Validate required dependencies for this connector.
+	if ac.tsdb == nil {
+		return nil, fmt.Errorf("invalid config: TSDB is not configured")
 	}
 	// The alerts connector fans-in to logs; set the downstream logs consumer.
 	ac.nextLogs = next
@@ -56,7 +58,9 @@ func createMetricsToLogs(
 	if err != nil {
 		return nil, err
 	}
-	// The alerts connector fans-in to logs; set the downstream logs consumer.
+	if ac.tsdb == nil {
+		return nil, fmt.Errorf("invalid config: TSDB is not configured")
+	}
 	ac.nextLogs = next
 	return ac, nil
 }
@@ -72,6 +76,9 @@ func createMetricsToMetrics(
 	ac, err := newAlertsConnector(ctx, set, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if ac.tsdb == nil {
+		return nil, fmt.Errorf("invalid config: TSDB is not configured")
 	}
 	ac.nextMetrics = next
 	return ac, nil

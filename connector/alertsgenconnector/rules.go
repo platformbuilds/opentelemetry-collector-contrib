@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -249,13 +250,15 @@ func (e *exprQuantile) evaluateTrace(rows []traceRow) (float64, bool) {
 		vals[i] = r.durationNs
 	}
 	sort.Float64s(vals)
-	idx := int(float64(len(vals)-1) * e.Q)
-	if idx < 0 {
-		idx = 0
+	// nearest-rank (1-based): rank = ceil(Q * N); idx = rank - 1
+	rank := int(math.Ceil(float64(len(vals)) * e.Q))
+	if rank < 1 {
+		rank = 1
 	}
-	if idx >= len(vals) {
-		idx = len(vals) - 1
+	if rank > len(vals) {
+		rank = len(vals)
 	}
+	idx := rank - 1
 	return vals[idx], true
 }
 
@@ -272,13 +275,15 @@ func (e *exprQuantile) evaluateMetric(rows []metricRow) (float64, bool) {
 		vals[i] = r.value
 	}
 	sort.Float64s(vals)
-	idx := int(float64(len(vals)-1) * e.Q)
-	if idx < 0 {
-		idx = 0
+	// nearest-rank (1-based): rank = ceil(Q * N); idx = rank - 1
+	rank := int(math.Ceil(float64(len(vals)) * e.Q))
+	if rank < 1 {
+		rank = 1
 	}
-	if idx >= len(vals) {
-		idx = len(vals) - 1
+	if rank > len(vals) {
+		rank = len(vals)
 	}
+	idx := rank - 1
 	return vals[idx], true
 }
 func (e *exprQuantile) compare(v float64) bool { return cmp(e.Op, v, e.Threshold) }

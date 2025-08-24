@@ -105,19 +105,21 @@ func TestFingerprintDeduper(t *testing.T) {
 
 // ---- Storm Limiter Tests ----
 
+// ---- Storm Limiter Tests ----
+
 func TestStormLimiter(t *testing.T) {
 	t.Run("transitions_limit", func(t *testing.T) {
 		l := storm.New(10, 0, 1*time.Second)
 
-		// Should allow up to 10 transitions
+		// Should allow up to 10 transitions (transition == true)
 		for i := 0; i < 10; i++ {
-			allow, dropped := l.Allow(1)
+			allow, dropped := l.Allow(1, true)
 			assert.Equal(t, 1, allow)
 			assert.Equal(t, 0, dropped)
 		}
 
 		// 11th should be dropped
-		allow, dropped := l.Allow(1)
+		allow, dropped := l.Allow(1, true)
 		assert.Equal(t, 0, allow)
 		assert.Equal(t, 1, dropped)
 	})
@@ -125,19 +127,19 @@ func TestStormLimiter(t *testing.T) {
 	t.Run("events_per_interval", func(t *testing.T) {
 		l := storm.New(0, 5, 100*time.Millisecond)
 
-		// Should allow up to 5 events
-		allow, dropped := l.Allow(5)
+		// Should allow up to 5 events in the interval (non‑transition)
+		allow, dropped := l.Allow(5, false)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
-		// 6th should be limited
-		allow, dropped = l.Allow(1)
+		// 6th should be limited within the same interval
+		allow, dropped = l.Allow(1, false)
 		assert.Equal(t, 0, allow)
 		assert.Equal(t, 1, dropped)
 
 		// After interval, should allow again
 		time.Sleep(150 * time.Millisecond)
-		allow, dropped = l.Allow(3)
+		allow, dropped = l.Allow(3, false)
 		assert.Equal(t, 3, allow)
 		assert.Equal(t, 0, dropped)
 	})
@@ -145,51 +147,43 @@ func TestStormLimiter(t *testing.T) {
 	t.Run("batch_allow", func(t *testing.T) {
 		l := storm.New(100, 10, 1*time.Second)
 
-		// Request batch of 5
-		allow, dropped := l.Allow(5)
+		// Request batch of 5 (non‑transition)
+		allow, dropped := l.Allow(5, false)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
 		// Request batch of 10 (only 5 left in interval)
-		allow, dropped = l.Allow(10)
+		allow, dropped = l.Allow(10, false)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 5, dropped)
 	})
 
 	t.Run("both_limits", func(t *testing.T) {
+		// Transition limit: 20/min; events per interval: 5 per 100ms.
 		l := storm.New(20, 5, 100*time.Millisecond)
 
-		// First interval
-		allow, dropped := l.Allow(5)
+		// 4 intervals of 5 transitions each → 20 total allowed
+		allow, dropped := l.Allow(5, true)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
-		// Wait for new interval
 		time.Sleep(150 * time.Millisecond)
-
-		// Second interval (10 transitions total)
-		allow, dropped = l.Allow(5)
+		allow, dropped = l.Allow(5, true)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
-		// Wait for new interval
 		time.Sleep(150 * time.Millisecond)
-
-		// Third interval (15 transitions total)
-		allow, dropped = l.Allow(5)
+		allow, dropped = l.Allow(5, true)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
-		// Wait for new interval
 		time.Sleep(150 * time.Millisecond)
-
-		// Fourth interval (would be 20 transitions, hits limit)
-		allow, dropped = l.Allow(5)
+		allow, dropped = l.Allow(5, true)
 		assert.Equal(t, 5, allow)
 		assert.Equal(t, 0, dropped)
 
-		// Fifth interval (exceeds transitions limit)
-		allow, dropped = l.Allow(5)
+		// 5th interval exceeds transitions/min limit → fully dropped
+		allow, dropped = l.Allow(5, true)
 		assert.Equal(t, 0, allow)
 		assert.Equal(t, 5, dropped)
 	})
@@ -197,8 +191,8 @@ func TestStormLimiter(t *testing.T) {
 	t.Run("no_limits", func(t *testing.T) {
 		l := storm.New(0, 0, 1*time.Second)
 
-		// Should allow everything
-		allow, dropped := l.Allow(1000)
+		// No caps → everything allowed (we’ll treat as non‑transition)
+		allow, dropped := l.Allow(1000, false)
 		assert.Equal(t, 1000, allow)
 		assert.Equal(t, 0, dropped)
 	})
@@ -213,7 +207,8 @@ func TestStormLimiter(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				allow, dropped := l.Allow(15)
+				// non‑transition batch of 15; interval cap is 100
+				allow, dropped := l.Allow(15, false)
 				mu.Lock()
 				totalAllowed += allow
 				totalDropped += dropped
@@ -223,8 +218,7 @@ func TestStormLimiter(t *testing.T) {
 
 		wg.Wait()
 
-		// Total requested: 150
-		// Limit per interval: 100
+		// Total requested: 150; interval cap: 100
 		assert.Equal(t, 100, totalAllowed)
 		assert.Equal(t, 50, totalDropped)
 	})
