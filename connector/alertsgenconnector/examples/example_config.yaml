@@ -1,10 +1,10 @@
 # -----------------------------------------------------------------------------
 # OpenTelemetry Collector - Example config with alertsgenconnector enabled
 # -----------------------------------------------------------------------------
-# HOW TO USE:
-# - Kubernetes: set instance_id via Pod name (Downward API env: K8S_POD_NAME).
-# - VMs / Bare Metal: set instance_id to hostname or machine-id.
-# - TSDB: disabled by default; enable for HA state restore / remote_write.
+# ENV HINTS:
+# - Kubernetes: set instance_id from Pod name via Downward API (e.g. ${K8S_POD_NAME})
+# - VMs / Bare metal: set instance_id to a stable hostname or machine-id (e.g. ${HOSTNAME})
+# - TSDB is OPTIONAL here (disabled by default). Enable it for HA/state restore & remote write.
 # -----------------------------------------------------------------------------
 
 receivers:
@@ -15,6 +15,7 @@ receivers:
 
 connectors:
   alertsgen:
+    # -------- Core scheduling --------
     window: 5s
     step: 5s
 
@@ -24,6 +25,7 @@ connectors:
     # Standalone: Just leave it as "${HOSTNAME}"
     instance_id: "${K8S_POD_NAME}"
 
+    # -------- Rules (examples; adjust to your data) --------
     rules:
       - name: "high_latency_traces"
         signal: "traces"
@@ -46,9 +48,9 @@ connectors:
         signal: "metrics"
         expr:
           type: "rate"
-          field: "http.server.requests"
+          field: "http.server.requests"   # adjust to your metric
           op: ">"
-          value: 0.02
+          value: 0.02                     # 2% error rate
           rate_duration: 2m
         for: 1m
         group_by: ["service.name", "http.target"]
@@ -62,7 +64,7 @@ connectors:
         signal: "logs"
         expr:
           type: "rate"
-          field: "severity"
+          field: "severity"               # interpreted as ERROR count in your evaluator
           op: ">"
           value: 50
           rate_duration: 1m
@@ -74,10 +76,14 @@ connectors:
           alertname: "log_error_burst"
         description: "High ERROR log rate"
 
+    # Emit a metric sample for each alert event (added feature)
+    emit_alert_metrics: true
+
+    # -------- TSDB (optional; disabled by default) --------
     tsdb:
       enabled: false
-      query_url: ""
-      remote_write_url: ""
+      query_url: ""               # e.g. K8s: http://prometheus.monitoring:9090
+      remote_write_url: ""        # e.g. K8s: http://victoria-metrics.monitoring:8428/api/v1/write
       enable_remote_write: false
       query_timeout: 30s
       write_timeout: 10s
@@ -85,12 +91,14 @@ connectors:
       remote_write_batch_size: 1000
       remote_write_flush_interval: 5s
 
+    # -------- De-duplication --------
     dedup:
       fingerprint_labels: ["alertname", "severity", "cluster", "namespace", "service"]
       exclude_labels: ["pod_ip", "container_id", "timestamp", "trace_id"]
       window: 30s
       enable_tsdb_dedup: true
 
+    # -------- Limits (storm + cardinality) --------
     limits:
       storm:
         max_transitions_per_minute: 100
@@ -109,6 +117,7 @@ connectors:
         label_sampling_enabled: false
         label_sampling_rate: 0.1
 
+    # -------- Notifications (timeouts & retries) --------
     notify:
       enabled: true
       timeout: 10s
@@ -119,9 +128,10 @@ connectors:
         max_delay: 30s
         multiplier: 2.0
 
+    # -------- Memory management --------
     memory:
-      max_memory_bytes: 0
-      max_memory_percent: 0.10
+      max_memory_bytes: 0                 # 0 = use percent
+      max_memory_percent: 0.10            # 10% of system memory
       max_trace_entries: 0
       max_log_entries: 0
       max_metric_entries: 0
@@ -140,22 +150,24 @@ exporters:
   logging:
     loglevel: debug
   prometheus:
-    endpoint: "0.0.0.0:9464"   # scrapeable by Prometheus
+    endpoint: "0.0.0.0:9464"      # scrapeable by Prometheus
     namespace: "otelcol"
 
 service:
   pipelines:
+    # Traces → AlertsGen → Logs (alerts emitted as logs)
     traces:
       receivers: [otlp]
       connectors: [alertsgen]
       exporters: [logging]
 
+    # Metrics → AlertsGen → Logs & Metrics (fan out)
     metrics:
       receivers: [otlp]
       connectors: [alertsgen]
-      # Export metrics both to logging (debug) and to Prometheus exporter
       exporters: [logging, prometheus]
 
+    # Logs pipeline (includes alerts emitted by the connector + any incoming logs)
     logs:
       receivers: [otlp]
       exporters: [logging]
