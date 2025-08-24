@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -66,7 +67,7 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 	}
 	rs.mx = mx
 
-	// ingester
+	// ingester holds sliding windows / buffers with adaptive memory management
 	ing := newIngesterWithLogger(c, set.Logger)
 
 	// OPTIONAL TSDB (only when enabled and URL set)
@@ -84,6 +85,7 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 		if err != nil {
 			set.Logger.Warn("Failed to create TSDB syncer", zap.Error(err))
 		} else {
+			// Restore state from TSDB on startup
 			if err := rs.restoreFromTSDB(ts); err != nil {
 				set.Logger.Warn("Failed to restore state from TSDB", zap.Error(err))
 			} else {
@@ -286,6 +288,16 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 		tsdbEvents := e.convertToTSDBEvents(events, now)
 		e.addEventsToBatch(tsdbEvents)
 
+		// NEW: Emit a metric per alert event (when enabled & metrics pipeline exists)
+		if e.cfg.EmitAlertMetrics && e.nextMetrics != nil {
+			md := e.buildAlertMetrics(events, now)
+			if md.MetricCount() > 0 {
+				if err := e.nextMetrics.ConsumeMetrics(context.Background(), md); err != nil {
+					e.logger.Warn("Failed to emit alert metrics", zap.Error(err))
+				}
+			}
+		}
+
 		// Self-telemetry
 		if e.mx != nil {
 			e.mx.RecordEvents(context.Background(), len(events))
@@ -314,6 +326,64 @@ func (e *alertsConnector) evaluateOnce(now time.Time) {
 			zap.Int("metrics_generated", len(metrics)),
 		)
 	}
+}
+
+// buildAlertMetrics converts alert events into a pmetric.Metrics payload.
+// It creates a counter "alertsgen_alerts_total" with one data point per event.
+func (e *alertsConnector) buildAlertMetrics(events []alertEvent, ts time.Time) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	if len(events) == 0 {
+		return md
+	}
+
+	rm := md.ResourceMetrics().AppendEmpty()
+	ilm := rm.ScopeMetrics().AppendEmpty()
+	sm := ilm.Metrics().AppendEmpty()
+	sm.SetName("alertsgen_alerts_total")
+	sm.SetEmptySum()
+	sum := sm.Sum()
+	sum.SetIsMonotonic(true)
+	sum.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+
+	dps := sum.DataPoints()
+	for _, ev := range events {
+		dp := dps.AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+		dp.SetIntValue(1)
+
+		attrs := dp.Attributes()
+
+		// Core attributes mirroring the alert log event.
+		// Note: ev.Labels may already contain "alertname".
+		if an, ok := ev.Labels["alertname"]; ok && an != "" {
+			attrs.PutStr("alertname", an)
+		}
+		if ev.Rule != "" {
+			attrs.PutStr("rule_id", ev.Rule)
+		}
+		if ev.Severity != "" {
+			attrs.PutStr("severity", ev.Severity)
+		}
+		if ev.State != "" {
+			attrs.PutStr("state", string(ev.State))
+		}
+		if fmt.Sprint(ev.Window) != "" && fmt.Sprint(ev.Window) != "0" {
+			attrs.PutStr("window", fmt.Sprint(ev.Window))
+		}
+		if fmt.Sprint(ev.For) != "" && fmt.Sprint(ev.For) != "0" {
+			attrs.PutStr("for", fmt.Sprint(ev.For))
+		}
+
+		// Flatten all labels; skip alertname if we already set it above.
+		for k, v := range ev.Labels {
+			if k == "alertname" {
+				continue
+			}
+			attrs.PutStr(k, v)
+		}
+	}
+
+	return md
 }
 
 // convertToTSDBEvents converts internal alertEvent to state.AlertEvent

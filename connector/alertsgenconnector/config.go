@@ -39,6 +39,9 @@ type Config struct {
 
 	// Memory management configuration.
 	Memory MemoryConfig `mapstructure:"memory"`
+
+	// NEW: also emit a metric per alert event produced (default true).
+	EmitAlertMetrics bool `mapstructure:"emit_alert_metrics"`
 }
 
 // TSDBConfig configures interactions with a time series DB (Prometheus/VictoriaMetrics, etc.)
@@ -172,7 +175,7 @@ func CreateDefaultConfig() component.Config {
 		Step:       5 * time.Second,
 		InstanceID: "default",
 		TSDB: &TSDBConfig{
-			Enabled:                  false, // ← default: disabled so lifecycle tests don’t require TSDB
+			Enabled:                  false, // default: disabled so lifecycle tests don’t require TSDB
 			QueryTimeout:             30 * time.Second,
 			WriteTimeout:             10 * time.Second,
 			DedupWindow:              30 * time.Second,
@@ -233,6 +236,8 @@ func CreateDefaultConfig() component.Config {
 			UseRingBuffers:               false,
 			RingBufferOverwrite:          false,
 		},
+		// Default ON so alert events also appear as a metric series if a metrics pipeline is wired.
+		EmitAlertMetrics: true,
 	}
 }
 
