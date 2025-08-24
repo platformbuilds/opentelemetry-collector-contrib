@@ -38,10 +38,17 @@ func createTracesToLogs(
 	if err != nil {
 		return nil, err
 	}
-	// Validate required dependencies for this connector.
-	if ac.tsdb == nil {
-		return nil, fmt.Errorf("invalid config: TSDB is not configured")
+
+	// Only enforce TSDB when it was explicitly enabled.
+	c, ok := cfg.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("invalid config type %T", cfg)
 	}
+	if c.TSDB != nil && c.TSDB.Enabled && ac.tsdb == nil {
+		// TSDB was requested but not configured/initialized.
+		return nil, fmt.Errorf("invalid config: tsdb.enabled=true but query_url is empty or TSDB init failed")
+	}
+
 	// The alerts connector fans-in to logs; set the downstream logs consumer.
 	ac.nextLogs = next
 	return ac, nil
@@ -58,9 +65,17 @@ func createMetricsToLogs(
 	if err != nil {
 		return nil, err
 	}
-	if ac.tsdb == nil {
-		return nil, fmt.Errorf("invalid config: TSDB is not configured")
+
+	// Only require TSDB if it was explicitly enabled in the config.
+	c, ok := cfg.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("invalid config type %T", cfg)
 	}
+	if c.TSDB != nil && c.TSDB.Enabled && ac.tsdb == nil {
+		// TSDB was requested (enabled) but not configured/initialized
+		return nil, fmt.Errorf("invalid config: tsdb.enabled=true but query_url is empty or TSDB init failed")
+	}
+
 	ac.nextLogs = next
 	return ac, nil
 }
@@ -77,9 +92,17 @@ func createMetricsToMetrics(
 	if err != nil {
 		return nil, err
 	}
-	if ac.tsdb == nil {
-		return nil, fmt.Errorf("invalid config: TSDB is not configured")
+
+	// NEW: only require TSDB when explicitly enabled
+	c, ok := cfg.(*Config)
+	if !ok {
+		return nil, fmt.Errorf("invalid config type %T", cfg)
 	}
+	if c.TSDB != nil && c.TSDB.Enabled && ac.tsdb == nil {
+		// TSDB was requested (enabled) but not configured/initialized
+		return nil, fmt.Errorf("invalid config: tsdb.enabled=true but query_url is empty or TSDB init failed")
+	}
+
 	ac.nextMetrics = next
 	return ac, nil
 }

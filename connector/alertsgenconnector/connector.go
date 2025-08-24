@@ -66,12 +66,12 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 	}
 	rs.mx = mx
 
-	// ingester holds sliding windows / buffers with adaptive memory management
+	// ingester
 	ing := newIngesterWithLogger(c, set.Logger)
 
-	// optional TSDB syncer for HA
+	// OPTIONAL TSDB (only when enabled and URL set)
 	var ts *state.TSDBSyncer
-	if c.TSDB != nil && c.TSDB.QueryURL != "" {
+	if c.TSDB != nil && c.TSDB.Enabled && c.TSDB.QueryURL != "" {
 		tsdbCfg := state.TSDBConfig{
 			QueryURL:       c.TSDB.QueryURL,
 			RemoteWriteURL: c.TSDB.RemoteWriteURL,
@@ -80,21 +80,21 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 			DedupWindow:    c.TSDB.DedupWindow,
 			InstanceID:     c.InstanceID,
 		}
-
 		ts, err = state.NewTSDBSyncer(tsdbCfg)
 		if err != nil {
 			set.Logger.Warn("Failed to create TSDB syncer", zap.Error(err))
 		} else {
-			// Restore state from TSDB on startup
 			if err := rs.restoreFromTSDB(ts); err != nil {
 				set.Logger.Warn("Failed to restore state from TSDB", zap.Error(err))
 			} else {
 				set.Logger.Info("Successfully restored alert state from TSDB")
 			}
 		}
+	} else {
+		set.Logger.Info("TSDB disabled or not configured; using in-memory state")
 	}
 
-	connector := &alertsConnector{
+	ac := &alertsConnector{
 		cfg:        c,
 		logger:     set.Logger,
 		rs:         rs,
@@ -106,12 +106,12 @@ func newAlertsConnector(ctx context.Context, set connector.Settings, cfg compone
 		evalStop:   make(chan struct{}),
 	}
 
-	// Start batch flushing if remote write is enabled
+	// remote write batching only when TSDB active AND enabled
 	if ts != nil && c.TSDB.EnableRemoteWrite {
-		connector.batchTicker = time.NewTicker(c.TSDB.RemoteWriteFlushInterval)
+		ac.batchTicker = time.NewTicker(c.TSDB.RemoteWriteFlushInterval)
 	}
 
-	return connector, nil
+	return ac, nil
 }
 
 func getBatchSize(c *Config) int {
@@ -141,13 +141,12 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		interval = 5 * time.Second
 	}
 
-	// Start evaluation goroutine
+	// evaluation loop
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ticker.C:
@@ -160,13 +159,12 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		}
 	}()
 
-	// Start batch flushing goroutine if enabled
+	// batch flusher (only when enabled)
 	if e.batchTicker != nil {
 		e.wg.Add(1)
 		go func() {
 			defer e.wg.Done()
 			defer e.batchTicker.Stop()
-
 			for {
 				select {
 				case <-e.batchTicker.C:
@@ -174,7 +172,6 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 				case <-e.flushChan:
 					e.flushEventBatch()
 				case <-e.evalStop:
-					// Final flush before shutdown
 					e.flushEventBatch()
 					return
 				case <-ctx.Done():
@@ -185,13 +182,12 @@ func (e *alertsConnector) Start(ctx context.Context, _ component.Host) error {
 		}()
 	}
 
-	// Start memory usage reporting goroutine
+	// memory reporting
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		ticker := time.NewTicker(60 * time.Second) // Report every minute
+		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ticker.C:
@@ -211,7 +207,6 @@ func (e *alertsConnector) Shutdown(ctx context.Context) error {
 	e.logger.Info("Shutting down alerts connector")
 	close(e.evalStop)
 
-	// Wait for all goroutines to finish
 	done := make(chan struct{})
 	go func() {
 		e.wg.Wait()
@@ -225,9 +220,7 @@ func (e *alertsConnector) Shutdown(ctx context.Context) error {
 		e.logger.Warn("Alerts connector shutdown timed out")
 	}
 
-	// Final memory usage report
 	e.reportMemoryUsage()
-
 	return nil
 }
 
@@ -351,28 +344,25 @@ func (e *alertsConnector) convertToTSDBEvents(events []alertEvent, timestamp tim
 
 // addEventsToBatch adds events to the batch and triggers flush if needed
 func (e *alertsConnector) addEventsToBatch(events []state.AlertEvent) {
-	if e.tsdb == nil || !e.cfg.TSDB.EnableRemoteWrite {
+	if e.tsdb == nil || e.cfg.TSDB == nil || !e.cfg.TSDB.EnableRemoteWrite {
 		return
 	}
-
 	e.eventBatchMu.Lock()
-	defer e.eventBatchMu.Unlock()
-
 	e.eventBatch = append(e.eventBatch, events...)
+	shouldFlush := len(e.eventBatch) >= e.cfg.TSDB.RemoteWriteBatchSize
+	e.eventBatchMu.Unlock()
 
-	// Trigger immediate flush if batch is full
-	if len(e.eventBatch) >= e.cfg.TSDB.RemoteWriteBatchSize {
+	if shouldFlush {
 		select {
 		case e.flushChan <- struct{}{}:
 		default:
-			// Channel is full, flush will happen on next timer
 		}
 	}
 }
 
 // flushEventBatch sends accumulated events to TSDB
 func (e *alertsConnector) flushEventBatch() {
-	if e.tsdb == nil || !e.cfg.TSDB.EnableRemoteWrite {
+	if e.tsdb == nil || e.cfg.TSDB == nil || !e.cfg.TSDB.EnableRemoteWrite {
 		return
 	}
 
@@ -381,20 +371,16 @@ func (e *alertsConnector) flushEventBatch() {
 		e.eventBatchMu.Unlock()
 		return
 	}
-
-	// Copy and reset batch
 	eventsToFlush := make([]state.AlertEvent, len(e.eventBatch))
 	copy(eventsToFlush, e.eventBatch)
-	e.eventBatch = e.eventBatch[:0] // Reset slice but keep capacity
+	e.eventBatch = e.eventBatch[:0]
 	e.eventBatchMu.Unlock()
 
-	// Convert to interface{} slice for PublishEvents
 	interfaceEvents := make([]interface{}, len(eventsToFlush))
-	for i, event := range eventsToFlush {
-		interfaceEvents[i] = event
+	for i, ev := range eventsToFlush {
+		interfaceEvents[i] = ev
 	}
 
-	// Publish to TSDB
 	start := time.Now()
 	if err := e.tsdb.PublishEvents(interfaceEvents); err != nil {
 		e.logger.Warn("Failed to publish events to TSDB",
@@ -402,11 +388,8 @@ func (e *alertsConnector) flushEventBatch() {
 			zap.Int("event_count", len(eventsToFlush)),
 			zap.Duration("duration", time.Since(start)),
 		)
-		// Record failed events for telemetry
 		if e.mx != nil {
-			// Count how many were dropped
 			e.mx.RecordDroppedData(context.Background(), int64(len(eventsToFlush)), 0, 0)
-			// Also log the reason
 			e.mx.RecordDropped(context.Background(), "tsdb_publish_failed")
 		}
 	} else {

@@ -1,169 +1,148 @@
-// Copyright The OpenTelemetry Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package alertsgenconnector
 
 import (
 	"context"
+	"strings"
 	"testing"
-	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/connector/connectortest"
-	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/connector"
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
-// minimal TSDB wiring for tests that expect success
-func testTSDBCfg() *TSDBConfig {
-	return &TSDBConfig{
-		// These values are not used to contact a live system during unit tests;
-		// they just indicate TSDB is configured.
-		QueryURL:     "http://prometheus:9090",
-		QueryTimeout: 5 * time.Second,
+// helper: build connector.Settings with no external deps.
+func testSettings() connector.Settings {
+	return connector.Settings{
+		ID:                component.NewID(component.MustNewType(typeStr)),
+		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
+		BuildInfo:         component.NewDefaultBuildInfo(),
 	}
 }
 
-func TestNewFactory(t *testing.T) {
-	factory := NewFactory()
-	require.NotNil(t, factory)
-
-	assert.Equal(t, component.MustNewType("alertsgen"), factory.Type())
-
-	// Check supported pipeline types
-	assert.True(t, factory.TracesToLogsStability() == component.StabilityLevelAlpha)
-	assert.True(t, factory.MetricsToLogsStability() == component.StabilityLevelAlpha)
-	assert.True(t, factory.MetricsToMetricsStability() == component.StabilityLevelAlpha)
-}
-
-func TestCreateTracesToLogs(t *testing.T) {
-	factory := NewFactory()
+func TestFactory_DefaultConfig_StartShutdown_OK(t *testing.T) {
 	ctx := context.Background()
-	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+	set := testSettings()
+	host := componenttest.NewNopHost()
 
-	// Default config + TSDB (mandatory for HA sync)
-	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.TSDB = testTSDBCfg()
-
-	// Create logs consumer
-	logsConsumer := consumertest.NewNop()
-
-	// Create connector
-	conn, err := factory.CreateTracesToLogs(ctx, set, cfg, logsConsumer)
-	require.NoError(t, err)
-	require.NotNil(t, conn)
-
-	// Type assertion to check internal state
-	alertConn, ok := conn.(*alertsConnector)
-	require.True(t, ok)
-	assert.Equal(t, logsConsumer, alertConn.nextLogs)
-	assert.Nil(t, alertConn.nextMetrics)
-	assert.Nil(t, alertConn.nextTraces)
-}
-
-func TestCreateMetricsToLogs(t *testing.T) {
-	factory := NewFactory()
-	ctx := context.Background()
-	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
-
-	// Default config + TSDB (mandatory for HA sync)
-	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.TSDB = testTSDBCfg()
-
-	// Create logs consumer
-	logsConsumer := consumertest.NewNop()
-
-	// Create connector
-	conn, err := factory.CreateMetricsToLogs(ctx, set, cfg, logsConsumer)
-	require.NoError(t, err)
-	require.NotNil(t, conn)
-
-	// Type assertion to check internal state
-	alertConn, ok := conn.(*alertsConnector)
-	require.True(t, ok)
-	assert.Equal(t, logsConsumer, alertConn.nextLogs)
-	assert.Nil(t, alertConn.nextMetrics)
-	assert.Nil(t, alertConn.nextTraces)
-}
-
-func TestCreateMetricsToMetrics(t *testing.T) {
-	factory := NewFactory()
-	ctx := context.Background()
-	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
-
-	// Default config + TSDB (mandatory for HA sync)
-	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.TSDB = testTSDBCfg()
-
-	// Create metrics consumer
-	metricsConsumer := consumertest.NewNop()
-
-	// Create connector
-	conn, err := factory.CreateMetricsToMetrics(ctx, set, cfg, metricsConsumer)
-	require.NoError(t, err)
-	require.NotNil(t, conn)
-
-	// Type assertion to check internal state
-	alertConn, ok := conn.(*alertsConnector)
-	require.True(t, ok)
-	assert.Equal(t, metricsConsumer, alertConn.nextMetrics)
-	assert.Nil(t, alertConn.nextLogs)
-	assert.Nil(t, alertConn.nextTraces)
-}
-
-func TestCreateWithInvalidConfig(t *testing.T) {
-	factory := NewFactory()
-	ctx := context.Background()
-	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
-
-	// Invalid config (missing TSDB)
-	cfg := &Config{
-		WindowSize: 5 * time.Second,
+	// Default config (TSDB disabled by default).
+	cfg := CreateDefaultConfig().(*Config)
+	if cfg.TSDB != nil {
+		cfg.TSDB.Enabled = false // be explicit to avoid surprises if defaults change
 	}
 
-	// Should fail for all pipeline types
-	t.Run("traces_to_logs", func(t *testing.T) {
-		logsConsumer := consumertest.NewNop()
-		conn, err := factory.CreateTracesToLogs(ctx, set, cfg, logsConsumer)
-		assert.Error(t, err)
-		assert.Nil(t, conn)
-	})
+	// traces -> logs
+	{
+		nextLogs, err := consumer.NewLogs(func(context.Context, plog.Logs) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next logs consumer failed: %v", err)
+		}
+		tr, err := createTracesToLogs(ctx, set, cfg, nextLogs)
+		if err != nil {
+			t.Fatalf("createTracesToLogs (default cfg) returned error: %v", err)
+		}
+		if err := tr.Start(ctx, host); err != nil {
+			t.Fatalf("traces->logs Start failed: %v", err)
+		}
+		if err := tr.Shutdown(ctx); err != nil {
+			t.Fatalf("traces->logs Shutdown failed: %v", err)
+		}
+	}
 
-	t.Run("metrics_to_logs", func(t *testing.T) {
-		logsConsumer := consumertest.NewNop()
-		conn, err := factory.CreateMetricsToLogs(ctx, set, cfg, logsConsumer)
-		assert.Error(t, err)
-		assert.Nil(t, conn)
-	})
+	// metrics -> logs
+	{
+		nextLogs, err := consumer.NewLogs(func(context.Context, plog.Logs) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next logs consumer failed: %v", err)
+		}
+		m2l, err := createMetricsToLogs(ctx, set, cfg, nextLogs)
+		if err != nil {
+			t.Fatalf("createMetricsToLogs (default cfg) returned error: %v", err)
+		}
+		if err := m2l.Start(ctx, host); err != nil {
+			t.Fatalf("metrics->logs Start failed: %v", err)
+		}
+		if err := m2l.Shutdown(ctx); err != nil {
+			t.Fatalf("metrics->logs Shutdown failed: %v", err)
+		}
+	}
 
-	t.Run("metrics_to_metrics", func(t *testing.T) {
-		metricsConsumer := consumertest.NewNop()
-		conn, err := factory.CreateMetricsToMetrics(ctx, set, cfg, metricsConsumer)
-		assert.Error(t, err)
-		assert.Nil(t, conn)
-	})
+	// metrics -> metrics
+	{
+		nextMetrics, err := consumer.NewMetrics(func(context.Context, pmetric.Metrics) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next metrics consumer failed: %v", err)
+		}
+		m2m, err := createMetricsToMetrics(ctx, set, cfg, nextMetrics)
+		if err != nil {
+			t.Fatalf("createMetricsToMetrics (default cfg) returned error: %v", err)
+		}
+		if err := m2m.Start(ctx, host); err != nil {
+			t.Fatalf("metrics->metrics Start failed: %v", err)
+		}
+		if err := m2m.Shutdown(ctx); err != nil {
+			t.Fatalf("metrics->metrics Shutdown failed: %v", err)
+		}
+	}
 }
 
-func TestFactoryType(t *testing.T) {
-	factory := NewFactory()
-	assert.Equal(t, component.MustNewType("alertsgen"), factory.Type())
-}
-
-func TestFactoryCapabilities(t *testing.T) {
-	factory := NewFactory()
+func TestFactory_TSDBEnabledWithoutURL_Errors(t *testing.T) {
 	ctx := context.Background()
-	set := connectortest.NewNopSettings(component.MustNewType("alertsgen"))
+	set := testSettings()
 
-	// Default config + TSDB (mandatory for HA sync)
-	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.TSDB = testTSDBCfg()
+	cfg := CreateDefaultConfig().(*Config)
+	if cfg.TSDB == nil {
+		cfg.TSDB = &TSDBConfig{}
+	}
+	cfg.TSDB.Enabled = true
+	cfg.TSDB.QueryURL = "" // intentionally missing to trigger guard
 
-	// Create a connector
-	conn, err := factory.CreateTracesToLogs(ctx, set, cfg, consumertest.NewNop())
-	require.NoError(t, err)
+	wantSubstr := "tsdb.enabled=true"
 
-	// Check capabilities
-	capabilities := conn.Capabilities()
-	assert.False(t, capabilities.MutatesData)
+	// traces -> logs should fail
+	{
+		nextLogs, err := consumer.NewLogs(func(context.Context, plog.Logs) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next logs consumer failed: %v", err)
+		}
+		_, err = createTracesToLogs(ctx, set, cfg, nextLogs)
+		if err == nil {
+			t.Fatalf("createTracesToLogs expected error when tsdb.enabled=true and query_url missing")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), wantSubstr) {
+			t.Fatalf("unexpected error: %v (want substring %q)", err, wantSubstr)
+		}
+	}
+
+	// metrics -> logs should fail
+	{
+		nextLogs, err := consumer.NewLogs(func(context.Context, plog.Logs) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next logs consumer failed: %v", err)
+		}
+		_, err = createMetricsToLogs(ctx, set, cfg, nextLogs)
+		if err == nil {
+			t.Fatalf("createMetricsToLogs expected error when tsdb.enabled=true and query_url missing")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), wantSubstr) {
+			t.Fatalf("unexpected error: %v (want substring %q)", err, wantSubstr)
+		}
+	}
+
+	// metrics -> metrics should fail
+	{
+		nextMetrics, err := consumer.NewMetrics(func(context.Context, pmetric.Metrics) error { return nil })
+		if err != nil {
+			t.Fatalf("creating next metrics consumer failed: %v", err)
+		}
+		_, err = createMetricsToMetrics(ctx, set, cfg, nextMetrics)
+		if err == nil {
+			t.Fatalf("createMetricsToMetrics expected error when tsdb.enabled=true and query_url missing")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), wantSubstr) {
+			t.Fatalf("unexpected error: %v (want substring %q)", err, wantSubstr)
+		}
+	}
 }

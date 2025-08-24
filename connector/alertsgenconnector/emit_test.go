@@ -101,7 +101,7 @@ func TestBuildLogs(t *testing.T) {
 	assert.Equal(t, "info", lr.SeverityText())
 
 	// Should still have window, for, value attributes
-	v, ok = attrs.Get("window")
+	_, ok = attrs.Get("window")
 	assert.True(t, ok)
 }
 

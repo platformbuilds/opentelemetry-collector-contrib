@@ -390,18 +390,3 @@ func createTestConfig() *Config {
 
 	return cfg
 }
-
-type mockTSDBSyncer struct {
-	activeEntries map[uint64]state.Entry
-	publishCalled bool
-	publishError  error
-}
-
-func (m *mockTSDBSyncer) QueryActive(ruleID string) (map[uint64]state.Entry, error) {
-	return m.activeEntries, nil
-}
-
-func (m *mockTSDBSyncer) PublishEvents(events []interface{}) error {
-	m.publishCalled = true
-	return m.publishError
-}

@@ -13,7 +13,6 @@ import (
 
 // Config is the top-level connector configuration.
 type Config struct {
-
 	// Sliding evaluation window (default 5s).
 	WindowSize time.Duration `mapstructure:"window"`
 
@@ -44,6 +43,9 @@ type Config struct {
 
 // TSDBConfig configures interactions with a time series DB (Prometheus/VictoriaMetrics, etc.)
 type TSDBConfig struct {
+	// NEW: when false, TSDB is optional and not required by tests/local.
+	Enabled bool `mapstructure:"enabled"`
+
 	// Base query URL, e.g., http://prometheus:9090
 	QueryURL string `mapstructure:"query_url"`
 
@@ -67,17 +69,10 @@ type TSDBConfig struct {
 
 // DedupConfig configures label-based fingerprinting and de-dup behavior.
 type DedupConfig struct {
-	// Labels used to compute a stable fingerprint for alerts/events.
-	FingerprintLabels []string `mapstructure:"fingerprint_labels"`
-
-	// Labels to exclude from fingerprints (e.g., highly volatile).
-	ExcludeLabels []string `mapstructure:"exclude_labels"`
-
-	// Optional window for event coalescing/de-dup.
-	Window time.Duration `mapstructure:"window"`
-
-	// Whether to rely on TSDB’s built-in de-dup (e.g., Prometheus HA).
-	EnableTSDBDedup bool `mapstructure:"enable_tsdb_dedup"`
+	FingerprintLabels []string      `mapstructure:"fingerprint_labels"`
+	ExcludeLabels     []string      `mapstructure:"exclude_labels"`
+	Window            time.Duration `mapstructure:"window"`
+	EnableTSDBDedup   bool          `mapstructure:"enable_tsdb_dedup"`
 }
 
 // LimitsConfig aggregates storm-control and cardinality limits.
@@ -88,15 +83,10 @@ type LimitsConfig struct {
 
 // StormCfg controls alert storms, state machine flapping, and circuit breaking.
 type StormCfg struct {
-	// max transitions across all rules per minute; 0 = unlimited
-	MaxTransitionsPerMinute int `mapstructure:"max_transitions_per_minute"`
-	// max events per limiter interval
-	MaxEventsPerInterval int `mapstructure:"max_events_per_interval"`
-	// limiter interval window
-	Interval time.Duration `mapstructure:"interval"`
-	// circuit breaker threshold (0.0-1.0, fraction of failures to trigger)
-	CircuitBreakerThreshold float64 `mapstructure:"circuit_breaker_threshold"`
-	// circuit breaker recovery time
+	MaxTransitionsPerMinute    int           `mapstructure:"max_transitions_per_minute"`
+	MaxEventsPerInterval       int           `mapstructure:"max_events_per_interval"`
+	Interval                   time.Duration `mapstructure:"interval"`
+	CircuitBreakerThreshold    float64       `mapstructure:"circuit_breaker_threshold"`
 	CircuitBreakerRecoveryTime time.Duration `mapstructure:"circuit_breaker_recovery_time"`
 }
 
@@ -111,7 +101,7 @@ type CardinalityCfg struct {
 	MaxSeriesPerRule     int            `mapstructure:"max_series_per_rule"`
 	LabelSamplingEnabled bool           `mapstructure:"label_sampling_enabled"`
 	LabelSamplingRate    float64        `mapstructure:"label_sampling_rate"`
-	Extra                map[string]any `mapstructure:",omitempty"` // reserved
+	Extra                map[string]any `mapstructure:",omitempty"`
 }
 
 // NotifyConfig governs notification behavior and retries.
@@ -132,93 +122,48 @@ type RetryConfig struct {
 
 // MemoryConfig configures adaptive memory usage to avoid OOMs and handle pressure.
 type MemoryConfig struct {
-	// Maximum total memory usage in bytes (0 = auto-detect based on available memory)
-	MaxMemoryBytes int64 `mapstructure:"max_memory_bytes"`
-
-	// Memory usage as percentage of available system memory (default: 10%)
-	MaxMemoryPercent float64 `mapstructure:"max_memory_percent"`
-
-	// Per-signal buffer limits (0 = auto-calculate)
-	MaxTraceEntries  int `mapstructure:"max_trace_entries"`
-	MaxLogEntries    int `mapstructure:"max_log_entries"`
-	MaxMetricEntries int `mapstructure:"max_metric_entries"`
-
-	// Adaptive scaling settings
-	EnableAdaptiveScaling bool          `mapstructure:"enable_adaptive_scaling"`
-	ScaleUpThreshold      float64       `mapstructure:"scale_up_threshold"`   // Scale up when usage > threshold
-	ScaleDownThreshold    float64       `mapstructure:"scale_down_threshold"` // Scale down below this usage
-	ScaleCheckInterval    time.Duration `mapstructure:"scale_check_interval"`
-	MaxScaleFactor        float64       `mapstructure:"max_scale_factor"` // Maximum buffer size multiplier
-
-	// Memory pressure handling
-	EnableMemoryPressureHandling bool    `mapstructure:"enable_memory_pressure_handling"`
-	MemoryPressureThreshold      float64 `mapstructure:"memory_pressure_threshold"`    // Start applying backoff/dropping when usage > threshold
-	SamplingRateUnderPressure    float64 `mapstructure:"sampling_rate_under_pressure"` // 0..1 effective sampling rate during pressure
-
-	// Ring buffer settings
-	UseRingBuffers      bool `mapstructure:"use_ring_buffers"`      // Use ring buffers instead of slices
-	RingBufferOverwrite bool `mapstructure:"ring_buffer_overwrite"` // Overwrite old data when buffer is full
+	MaxMemoryBytes               int64         `mapstructure:"max_memory_bytes"`
+	MaxMemoryPercent             float64       `mapstructure:"max_memory_percent"`
+	MaxTraceEntries              int           `mapstructure:"max_trace_entries"`
+	MaxLogEntries                int           `mapstructure:"max_log_entries"`
+	MaxMetricEntries             int           `mapstructure:"max_metric_entries"`
+	EnableAdaptiveScaling        bool          `mapstructure:"enable_adaptive_scaling"`
+	ScaleUpThreshold             float64       `mapstructure:"scale_up_threshold"`
+	ScaleDownThreshold           float64       `mapstructure:"scale_down_threshold"`
+	ScaleCheckInterval           time.Duration `mapstructure:"scale_check_interval"`
+	MaxScaleFactor               float64       `mapstructure:"max_scale_factor"`
+	EnableMemoryPressureHandling bool          `mapstructure:"enable_memory_pressure_handling"`
+	MemoryPressureThreshold      float64       `mapstructure:"memory_pressure_threshold"`
+	SamplingRateUnderPressure    float64       `mapstructure:"sampling_rate_under_pressure"`
+	UseRingBuffers               bool          `mapstructure:"use_ring_buffers"`
+	RingBufferOverwrite          bool          `mapstructure:"ring_buffer_overwrite"`
 }
 
 // RuleCfg represents a single rule to evaluate.
 type RuleCfg struct {
-	// Unique rule name.
-	Name string `mapstructure:"name"`
-
-	// Signal type: "metrics" | "logs" | "traces"
-	Signal string `mapstructure:"signal"`
-
-	// The expression to evaluate.
-	Expr ExprCfg `mapstructure:"expr"`
-
-	// Optional per-rule window/step overrides.
-	Window time.Duration `mapstructure:"window"`
-	Step   time.Duration `mapstructure:"step"`
-
-	// Minimum time the condition must hold before firing.
-	For time.Duration `mapstructure:"for"`
-
-	// Group-by labels for aggregation.
-	GroupBy []string `mapstructure:"group_by"`
-
-	// Label selectors (regex) to prefilter series/logs.
-	Select map[string]string `mapstructure:"select"`
-
-	// Optional severity: info|warning|critical (default warning)
-	Severity string `mapstructure:"severity"`
-
-	// Enable/disable rule (default true).
-	Enabled bool `mapstructure:"enabled"`
-
-	// Additional static labels added to generated alerts.
-	Labels map[string]string `mapstructure:"labels"`
-
-	// Optional description.
-	Description string `mapstructure:"description"`
+	Name        string            `mapstructure:"name"`
+	Signal      string            `mapstructure:"signal"`
+	Expr        ExprCfg           `mapstructure:"expr"`
+	Window      time.Duration     `mapstructure:"window"`
+	Step        time.Duration     `mapstructure:"step"`
+	For         time.Duration     `mapstructure:"for"`
+	GroupBy     []string          `mapstructure:"group_by"`
+	Select      map[string]string `mapstructure:"select"`
+	Severity    string            `mapstructure:"severity"`
+	Enabled     bool              `mapstructure:"enabled"`
+	Labels      map[string]string `mapstructure:"labels"`
+	Description string            `mapstructure:"description"`
 }
 
 // ExprCfg describes the expression and comparison.
 type ExprCfg struct {
-	// Type of function: avg_over_time, count_over_time, stddev_over_time, rate, quantile, etc.
-	Type string `mapstructure:"type"`
-
-	// Name of the field/value to evaluate (e.g., "duration", "value").
-	Field string `mapstructure:"field"`
-
-	// Comparison op: >, >=, <, <=, ==, !=
-	Op string `mapstructure:"op"`
-
-	// Value to compare against.
-	Value float64 `mapstructure:"value"`
-
-	// For quantile-based exprs.
-	Quantile float64 `mapstructure:"quantile"`
-
-	// For rate-based exprs, duration to calculate rate over.
-	RateDuration time.Duration `mapstructure:"rate_duration"`
-
-	// Custom evaluation options.
-	Options map[string]interface{} `mapstructure:"options"`
+	Type         string                 `mapstructure:"type"`
+	Field        string                 `mapstructure:"field"`
+	Op           string                 `mapstructure:"op"`
+	Value        float64                `mapstructure:"value"`
+	Quantile     float64                `mapstructure:"quantile"`
+	RateDuration time.Duration          `mapstructure:"rate_duration"`
+	Options      map[string]interface{} `mapstructure:"options"`
 }
 
 func CreateDefaultConfig() component.Config {
@@ -227,6 +172,7 @@ func CreateDefaultConfig() component.Config {
 		Step:       5 * time.Second,
 		InstanceID: "default",
 		TSDB: &TSDBConfig{
+			Enabled:                  false, // ← default: disabled so lifecycle tests don’t require TSDB
 			QueryTimeout:             30 * time.Second,
 			WriteTimeout:             10 * time.Second,
 			DedupWindow:              30 * time.Second,
@@ -272,10 +218,10 @@ func CreateDefaultConfig() component.Config {
 			},
 		},
 		Memory: MemoryConfig{
-			MaxMemoryPercent:             0.10, // 10% of system memory
-			MaxTraceEntries:              0,    // auto-calc
-			MaxLogEntries:                0,    // auto-calc
-			MaxMetricEntries:             0,    // auto-calc
+			MaxMemoryPercent:             0.10,
+			MaxTraceEntries:              0,
+			MaxLogEntries:                0,
+			MaxMetricEntries:             0,
 			EnableAdaptiveScaling:        true,
 			ScaleUpThreshold:             0.8,
 			ScaleDownThreshold:           0.4,
@@ -298,17 +244,15 @@ func (c *Config) Validate() error {
 	if c.Step <= 0 {
 		c.Step = c.WindowSize
 	}
-
 	if c.InstanceID == "" {
 		c.InstanceID = "default"
 	}
 
-	// TSDB checks.
-	if c.TSDB == nil {
-		return errors.New("tsdb required")
-	}
-	if err := c.TSDB.validate(); err != nil {
-		return err
+	// TSDB is OPTIONAL unless explicitly enabled.
+	if c.TSDB != nil && c.TSDB.Enabled {
+		if err := c.TSDB.validate(); err != nil {
+			return err
+		}
 	}
 
 	// Memory checks.
