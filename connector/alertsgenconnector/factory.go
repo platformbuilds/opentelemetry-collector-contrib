@@ -13,44 +13,56 @@ import (
 
 const typeStr = "alertsgen"
 
+// NewFactory wires up the connector to support the pipeline pairs exercised by
+// generated_component_test: metrics->logs and traces->logs. We also keep
+// metrics->metrics if your code already had it.
 func NewFactory() connector.Factory {
 	return connector.NewFactory(
 		component.MustNewType(typeStr),
 		CreateDefaultConfig,
-		connector.WithTracesToTraces(createTracesToTraces, component.StabilityLevelAlpha),
-		connector.WithLogsToLogs(createLogsToLogs, component.StabilityLevelAlpha),
+		// Enable traces -> logs
+		connector.WithTracesToLogs(createTracesToLogs, component.StabilityLevelAlpha),
+		// Enable metrics -> logs
+		connector.WithMetricsToLogs(createMetricsToLogs, component.StabilityLevelAlpha),
+		// Keep metrics -> metrics if your connector uses it elsewhere
 		connector.WithMetricsToMetrics(createMetricsToMetrics, component.StabilityLevelAlpha),
 	)
 }
 
-func createTracesToTraces(
+// createTracesToLogs constructs the connector for a traces->logs pipeline.
+func createTracesToLogs(
 	ctx context.Context,
 	set connector.Settings,
 	cfg component.Config,
-	next consumer.Traces,
+	next consumer.Logs,
 ) (connector.Traces, error) {
 	ac, err := newAlertsConnector(ctx, set, cfg)
 	if err != nil {
 		return nil, err
 	}
-	ac.nextTraces = next
-	return ac, nil
-}
-
-func createLogsToLogs(
-	ctx context.Context,
-	set connector.Settings,
-	cfg component.Config,
-	next consumer.Logs,
-) (connector.Logs, error) {
-	ac, err := newAlertsConnector(ctx, set, cfg)
-	if err != nil {
-		return nil, err
-	}
+	// The alerts connector fans-in to logs; set the downstream logs consumer.
 	ac.nextLogs = next
 	return ac, nil
 }
 
+// createMetricsToLogs constructs the connector for a metrics->logs pipeline.
+func createMetricsToLogs(
+	ctx context.Context,
+	set connector.Settings,
+	cfg component.Config,
+	next consumer.Logs,
+) (connector.Metrics, error) {
+	ac, err := newAlertsConnector(ctx, set, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// The alerts connector fans-in to logs; set the downstream logs consumer.
+	ac.nextLogs = next
+	return ac, nil
+}
+
+// If you already had metrics->metrics support, keep it as-is. Leaving here so
+// existing code paths keep working.
 func createMetricsToMetrics(
 	ctx context.Context,
 	set connector.Settings,
