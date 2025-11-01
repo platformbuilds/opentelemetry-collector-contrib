@@ -56,6 +56,7 @@ func converters[K any]() []ottl.Factory[K] {
 		NewHasSuffixFactory[K](),
 		NewHourFactory[K](),
 		NewHoursFactory[K](),
+		NewIndexFactory[K](),
 		NewInsertXMLFactory[K](),
 		NewIntFactory[K](),
 		NewIsBoolFactory[K](),
@@ -99,6 +100,8 @@ func converters[K any]() []ottl.Factory[K] {
 		NewTimeFactory[K](),
 		NewFormatTimeFactory[K](),
 		NewTrimFactory[K](),
+		NewTrimPrefixFactory[K](),
+		NewTrimSuffixFactory[K](),
 		NewToKeyValueStringFactory[K](),
 		NewToCamelCaseFactory[K](),
 		NewToLowerCaseFactory[K](),
@@ -124,5 +127,7 @@ func converters[K any]() []ottl.Factory[K] {
 		NewProfileIDFactory[K](),
 		NewParseIntFactory[K](),
 		NewKeysFactory[K](),
+		NewXXH3Factory[K](),
+		NewXXH128Factory[K](),
 	}
 }

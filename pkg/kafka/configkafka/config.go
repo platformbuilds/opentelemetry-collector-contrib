@@ -48,13 +48,28 @@ type ClientConfig struct {
 
 	// Metadata holds metadata-related configuration for producers and consumers.
 	Metadata MetadataConfig `mapstructure:"metadata"`
+
+	// RackID provides the rack identifier for this client to enable rack-aware
+	// replica selection when supported by the brokers. This maps to Kafka's
+	// standard "client.rack" setting. By default, this is empty.
+	RackID string `mapstructure:"rack_id"`
+
+	// When enabled, the consumer uses the leader epoch returned by brokers (KIP-320)
+	// to detect log truncation. Setting this to false clears the leader epoch from
+	// fetch offsets, disabling KIP-320. Disabling can improve compatibility with
+	// brokers that don’t fully support leader epochs (e.g., Azure Event Hubs),
+	// at the cost of losing automatic log-truncation safety.
+	//
+	// NOTE: this is experimental and may be removed in a future release.
+	UseLeaderEpoch bool `mapstructure:"use_leader_epoch"`
 }
 
 func NewDefaultClientConfig() ClientConfig {
 	return ClientConfig{
-		Brokers:  []string{"localhost:9092"},
-		ClientID: "otel-collector",
-		Metadata: NewDefaultMetadataConfig(),
+		Brokers:        []string{"localhost:9092"},
+		ClientID:       "otel-collector",
+		Metadata:       NewDefaultMetadataConfig(),
+		UseLeaderEpoch: true,
 	}
 }
 
@@ -103,9 +118,16 @@ type ConsumerConfig struct {
 	// The maximum amount of time to wait for MinFetchSize bytes to be
 	// available before the broker returns a response (default 250ms)
 	MaxFetchWait time.Duration `mapstructure:"max_fetch_wait"`
+
+	// MaxPartitionFetchSize defines the maximum number of bytes to fetch
+	// per partition (default "1048576")
+	MaxPartitionFetchSize int32 `mapstructure:"max_partition_fetch_size"`
+
 	// RebalanceStrategy specifies the strategy to use for partition assignment.
-	// Possible values are "range", "roundrobin", and "sticky".
-	// Defaults to "range".
+	// Possible values are "range", "roundrobin", and "sticky", and
+	// "cooperative-sticky" (franz-go only).
+	//
+	// Defaults to "cooperative-sticky" for franz-go, "range" for Sarama.
 	GroupRebalanceStrategy string `mapstructure:"group_rebalance_strategy,omitempty"`
 
 	// GroupInstanceID specifies the ID of the consumer
@@ -122,10 +144,11 @@ func NewDefaultConsumerConfig() ConsumerConfig {
 			Enable:   true,
 			Interval: time.Second,
 		},
-		MinFetchSize:     1,
-		MaxFetchSize:     0,
-		MaxFetchWait:     250 * time.Millisecond,
-		DefaultFetchSize: 1048576,
+		MinFetchSize:          1,
+		MaxFetchSize:          0,
+		MaxFetchWait:          250 * time.Millisecond,
+		DefaultFetchSize:      1048576,
+		MaxPartitionFetchSize: 1048576,
 	}
 }
 
@@ -192,14 +215,19 @@ type ProducerConfig struct {
 	// broker request. Defaults to 0 for unlimited. Similar to
 	// `queue.buffering.max.messages` in the JVM producer.
 	FlushMaxMessages int `mapstructure:"flush_max_messages"`
+
+	// Whether or not to allow automatic topic creation.
+	// (default enabled).
+	AllowAutoTopicCreation bool `mapstructure:"allow_auto_topic_creation"`
 }
 
 func NewDefaultProducerConfig() ProducerConfig {
 	return ProducerConfig{
-		MaxMessageBytes:  1000000,
-		RequiredAcks:     WaitForLocal,
-		Compression:      "none",
-		FlushMaxMessages: 0,
+		MaxMessageBytes:        1000000,
+		RequiredAcks:           WaitForLocal,
+		Compression:            "none",
+		FlushMaxMessages:       0,
+		AllowAutoTopicCreation: true,
 	}
 }
 
@@ -239,7 +267,7 @@ func (c *ProducerConfig) Unmarshal(conf *confmap.Conf) error {
 	return conf.Unmarshal(c)
 }
 
-// RequiredAcks defines record acknowledgement behavior for for producers.
+// RequiredAcks defines record acknowledgement behavior for producers.
 type RequiredAcks int
 
 const (
@@ -367,6 +395,8 @@ func (c SASLConfig) Validate() error {
 type AWSMSKConfig struct {
 	// Region is the AWS region the MSK cluster is based in
 	Region string `mapstructure:"region"`
+	// prevent unkeyed literal initialization
+	_ struct{}
 }
 
 // KerberosConfig defines kerberos configuration.

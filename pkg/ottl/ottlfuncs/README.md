@@ -474,6 +474,7 @@ Available Converters:
 - [Hex](#hex)
 - [Hour](#hour)
 - [Hours](#hours)
+- [Index](#index)
 - [InsertXML](#insertxml)
 - [Int](#int)
 - [IsBool](#isbool)
@@ -536,6 +537,8 @@ Available Converters:
 - [UUIDv7](#UUIDv7)
 - [Values](#values)
 - [Weekday](#weekday)
+- [XXH3](#xxh3)
+- [XXH128](#xxh128)
 - [Year](#year)
 
 ### Base64Decode (Deprecated)
@@ -1075,6 +1078,24 @@ The returned type is `float64`.
 Examples:
 
 - `Hours(Duration("1h"))`
+
+### Index
+
+`Index(target, value)`
+
+The `Index` Converter returns the index of the first occurrence of the `value` in the `target`, or `-1` if not found. Values are compared using the OTTL [comparison rules](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/ottl/LANGUAGE.md#comparison-rules).
+
+`target` is a string or a slice of any type described in the OTTL comparison rules.
+
+`value` is the content whose index is being searched for in the `target`.
+
+The returned type is `int64`.
+
+**Examples:**
+
+- `Index("hello world", "world")`
+- `Index(log.attributes["tags"], "error")`
+- `Index(log.attributes["scores"], 95)`
 
 ### InsertXML
 
@@ -2126,6 +2147,44 @@ Examples:
 - `Trim(" this is a test ", " ")`
 - `Trim("!!this is a test!!", "!!")`
 
+### TrimPrefix
+
+`TrimPrefix(value, prefix)`
+
+The `TrimPrefix` function returns the `value` without the provided leading `prefix` string. If `value` doesn't start with `prefix`, `value` is returned unchanged.
+
+The returned type is `string`.
+
+If the `value` is not a string or does not exist, the `TrimPrefix` converter will return an error.
+
+The `value` is either a path expression to a telemetry field to retrieve or a literal.
+
+Examples:
+
+- `set(resource.attributes["service.name"], TrimPrefix(resource.attributes["service.name"], "ingest_"))`
+
+
+- `TrimPrefix("ingest_service", "ingest_")`
+
+### TrimSuffix
+
+`TrimSuffix(value, suffix)`
+
+The `TrimSuffix` function returns the `value` without the provided trailing `suffix` string. If `value` doesn't start with `suffix`, `value` is returned unchanged.
+
+The returned type is `string`.
+
+If the `value` is not a string or does not exist, the `TrimSuffix` converter will return an error.
+
+The `value` is either a path expression to a telemetry field to retrieve or a literal.
+
+Examples:
+
+- `set(resource.attributes["service.name"], TrimSuffix(resource.attributes["service.name"], "_service"))`
+
+
+- `TrimSuffix("ingest_service", "_service")`
+
 ### String
 
 `String(value)`
@@ -2549,6 +2608,40 @@ The returned range is 0-6 (Sun-Sat)
 Examples:
 
 - `Weekday(Now())`
+
+### XXH3
+
+`XXH3(value)`
+
+The `XXH3` Converter generates a 64-bit xxHash digest from the input `value` using the XXH3 hash algorithm.
+
+The returned type is string.
+
+`value` is either a path expression to a string telemetry field or a literal string. If `value` is another type an error is returned.
+
+If an error occurs during hashing, it is returned.
+
+Examples:
+
+- `XXH3(resource.attributes["device.name"])`
+- `XXH3("name")`
+
+### XXH128
+
+`XXH128(value)`
+
+The `XXH128` Converter generates a 128-bit xxHash digest from the input `value` using the XXH128 hash algorithm.
+
+The returned type is string.
+
+`value` is either a path expression to a string telemetry field or a literal string. If `value` is another type an error is returned.
+
+If an error occurs during hashing, it is returned.
+
+Examples:
+
+- `XXH128(resource.attributes["device.name"])`
+- `XXH128("name")`
 
 ### Year
 

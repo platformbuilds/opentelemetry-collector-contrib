@@ -37,7 +37,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/prometheusreceiver/internal/metadata"
 )
 
-type MockTargetAllocator struct {
+type mockTargetAllocator struct {
 	mu          sync.Mutex // mu protects the fields below.
 	endpoints   map[string][]mockTargetAllocatorResponse
 	accessIndex map[string]*atomic.Int32
@@ -78,7 +78,7 @@ type expectedTestResult struct {
 	jobMap map[string]expectedTestResultJobMap
 }
 
-func (mta *MockTargetAllocator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+func (mta *mockTargetAllocator) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	mta.mu.Lock()
 	defer mta.mu.Unlock()
 
@@ -105,11 +105,11 @@ func (mta *MockTargetAllocator) ServeHTTP(rw http.ResponseWriter, req *http.Requ
 	}
 }
 
-func (mta *MockTargetAllocator) Start() {
+func (mta *mockTargetAllocator) Start() {
 	mta.srv.Start()
 }
 
-func (mta *MockTargetAllocator) Stop() {
+func (mta *mockTargetAllocator) Stop() {
 	mta.srv.Close()
 }
 
@@ -136,13 +136,13 @@ func transformTAResponseMap(rawResponses map[string][]mockTargetAllocatorRespons
 	return responsesMap, responsesIndexMap, nil
 }
 
-func setupMockTargetAllocator(responses Responses) (*MockTargetAllocator, error) {
+func setupMockTargetAllocator(responses Responses) (*mockTargetAllocator, error) {
 	responsesMap, responsesIndexMap, err := transformTAResponseMap(responses.responses)
 	if err != nil {
 		return nil, err
 	}
 
-	mockTA := &MockTargetAllocator{
+	mockTA := &mockTargetAllocator{
 		endpoints:   responsesMap,
 		accessIndex: responsesIndexMap,
 		waitIndex:   responses.releaserMap,
@@ -734,8 +734,9 @@ func TestTargetAllocatorJobRetrieval(t *testing.T) {
 			tc.cfg.Endpoint = allocator.srv.URL // set service URL with the automatic generated one
 			scrapeManager, discoveryManager := initPrometheusManagers(ctx, t)
 
-			baseCfg := promconfig.Config{GlobalConfig: promconfig.DefaultGlobalConfig}
-			manager := NewManager(receivertest.NewNopSettings(metadata.Type), tc.cfg, &baseCfg, false)
+			baseCfg, err := promconfig.Load("", nil)
+			require.NoError(t, err)
+			manager := NewManager(receivertest.NewNopSettings(metadata.Type), tc.cfg, baseCfg, false)
 			require.NoError(t, manager.Start(ctx, componenttest.NewNopHost(), scrapeManager, discoveryManager))
 
 			allocator.wg.Wait()
@@ -773,6 +774,14 @@ func TestTargetAllocatorJobRetrieval(t *testing.T) {
 						// which is identical to the source url
 						s.Labels["__meta_url"] = model.LabelValue(sdConfig.URL)
 						require.Equal(t, s.Labels, group.Labels)
+
+						// The manager may not be done processing the Refresh call by the
+						// time we check the value of the ScrapeConfig.
+						require.Eventually(t, func() bool {
+							v := manager.configUpdateCount.Load()
+							return v >= int64(len(tc.responses.responses["/scrape_configs"]))
+						}, 5*time.Second, 250*time.Millisecond)
+
 						if s.MetricRelabelConfig != nil {
 							for _, sc := range manager.promCfg.ScrapeConfigs {
 								if sc.JobName == s.MetricRelabelConfig.JobName {
@@ -926,8 +935,10 @@ func TestManagerSyncWithInitialScrapeConfigs(t *testing.T) {
 	cfg.Endpoint = allocator.srv.URL // set service URL with the automatic generated one
 	scrapeManager, discoveryManager := initPrometheusManagers(ctx, t)
 
-	baseCfg := promconfig.Config{GlobalConfig: promconfig.DefaultGlobalConfig, ScrapeConfigs: initialScrapeConfigs}
-	manager := NewManager(receivertest.NewNopSettings(metadata.Type), cfg, &baseCfg, false)
+	baseCfg, err := promconfig.Load("", nil)
+	require.NoError(t, err)
+	baseCfg.ScrapeConfigs = initialScrapeConfigs
+	manager := NewManager(receivertest.NewNopSettings(metadata.Type), cfg, baseCfg, false)
 	require.NoError(t, manager.Start(ctx, componenttest.NewNopHost(), scrapeManager, discoveryManager))
 
 	allocator.wg.Wait()

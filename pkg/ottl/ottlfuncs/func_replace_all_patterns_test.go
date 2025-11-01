@@ -167,8 +167,13 @@ func Test_replaceAllPatterns(t *testing.T) {
 			replacementFormat: ottl.NewTestingOptional[ottl.StringGetter[pcommon.Map]](invalidPrefix),
 			function:          optionalArg,
 			want: func(expectedMap pcommon.Map) {
-				expectedMap.PutEmpty("test")
-				expectedMap.Remove("test")
+				expectedMap.PutStr("test", "hello world")
+				expectedMap.PutStr("test2", "hello")
+				expectedMap.PutStr("test3", "goodbye world1 and world2")
+				expectedMap.PutInt("test4", 1234)
+				expectedMap.PutDouble("test5", 1234)
+				expectedMap.PutBool("test6", true)
+				expectedMap.PutStr("test7", "")
 			},
 		},
 		{
@@ -529,7 +534,13 @@ func Test_replaceAllPatterns(t *testing.T) {
 				},
 			}
 
-			exprFunc, err := replaceAllPatterns[pcommon.Map](target, tt.mode, tt.pattern, tt.replacement, tt.function, tt.replacementFormat)
+			pattern := &ottl.StandardStringGetter[pcommon.Map]{
+				Getter: func(_ context.Context, _ pcommon.Map) (any, error) {
+					return tt.pattern, nil
+				},
+			}
+
+			exprFunc, err := replaceAllPatterns[pcommon.Map](target, tt.mode, pattern, tt.replacement, tt.function, tt.replacementFormat)
 			assert.NoError(t, err)
 
 			_, err = exprFunc(nil, scenarioMap)
@@ -562,7 +573,13 @@ func Test_replaceAllPatterns_bad_input(t *testing.T) {
 	function := ottl.Optional[ottl.FunctionGetter[any]]{}
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
-	exprFunc, err := replaceAllPatterns[any](target, modeValue, "regexpattern", replacement, function, replacementFormat)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "regexpattern", nil
+		},
+	}
+
+	exprFunc, err := replaceAllPatterns[any](target, modeValue, pattern, replacement, function, replacementFormat)
 	assert.NoError(t, err)
 
 	_, err = exprFunc(nil, input)
@@ -587,7 +604,13 @@ func Test_replaceAllPatterns_bad_function_input(t *testing.T) {
 	function := ottl.Optional[ottl.FunctionGetter[any]]{}
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
-	exprFunc, err := replaceAllPatterns[any](target, modeValue, "regexp", replacement, function, replacementFormat)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "regexp", nil
+		},
+	}
+
+	exprFunc, err := replaceAllPatterns[any](target, modeValue, pattern, replacement, function, replacementFormat)
 	assert.NoError(t, err)
 
 	result, err := exprFunc(nil, input)
@@ -629,7 +652,13 @@ func Test_replaceAllPatterns_bad_function_result(t *testing.T) {
 	function := ottl.NewTestingOptional[ottl.FunctionGetter[any]](ottlValue)
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
-	exprFunc, err := replaceAllPatterns[any](target, modeValue, "regexp", replacement, function, replacementFormat)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "regexp", nil
+		},
+	}
+
+	exprFunc, err := replaceAllPatterns[any](target, modeValue, pattern, replacement, function, replacementFormat)
 	assert.NoError(t, err)
 
 	result, err := exprFunc(nil, input)
@@ -661,7 +690,13 @@ func Test_replaceAllPatterns_get_nil(t *testing.T) {
 	function := ottl.Optional[ottl.FunctionGetter[any]]{}
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
-	exprFunc, err := replaceAllPatterns[any](target, modeValue, "regexp", replacement, function, replacementFormat)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "regexp", nil
+		},
+	}
+
+	exprFunc, err := replaceAllPatterns[any](target, modeValue, pattern, replacement, function, replacementFormat)
 	assert.NoError(t, err)
 
 	_, err = exprFunc(nil, nil)
@@ -671,7 +706,7 @@ func Test_replaceAllPatterns_get_nil(t *testing.T) {
 func Test_replaceAllPatterns_invalid_pattern(t *testing.T) {
 	target := &ottl.StandardPMapGetSetter[any]{
 		Getter: func(context.Context, any) (pcommon.Map, error) {
-			return pcommon.Map{}, errors.New("nothing should be received in this scenario")
+			return pcommon.Map{}, nil
 		},
 	}
 	replacement := &ottl.StandardStringGetter[any]{
@@ -682,11 +717,15 @@ func Test_replaceAllPatterns_invalid_pattern(t *testing.T) {
 	function := ottl.Optional[ottl.FunctionGetter[any]]{}
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
-	invalidRegexPattern := "*"
-	exprFunc, err := replaceAllPatterns[any](target, modeValue, invalidRegexPattern, replacement, function, replacementFormat)
-	require.Error(t, err)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "*", nil
+		},
+	}
+	exprFunc, err := replaceAllPatterns[any](target, modeValue, pattern, replacement, function, replacementFormat)
+	require.NoError(t, err)
+	_, err = exprFunc(nil, nil)
 	assert.ErrorContains(t, err, "error parsing regexp:")
-	assert.Nil(t, exprFunc)
 }
 
 func Test_replaceAllPatterns_invalid_model(t *testing.T) {
@@ -704,7 +743,12 @@ func Test_replaceAllPatterns_invalid_model(t *testing.T) {
 	replacementFormat := ottl.Optional[ottl.StringGetter[any]]{}
 
 	invalidMode := "invalid"
-	exprFunc, err := replaceAllPatterns[any](target, invalidMode, "regex", replacement, function, replacementFormat)
+	pattern := &ottl.StandardStringGetter[any]{
+		Getter: func(_ context.Context, _ any) (any, error) {
+			return "regex", nil
+		},
+	}
+	exprFunc, err := replaceAllPatterns[any](target, invalidMode, pattern, replacement, function, replacementFormat)
 	assert.Nil(t, exprFunc)
 	assert.ErrorContains(t, err, "invalid mode")
 }

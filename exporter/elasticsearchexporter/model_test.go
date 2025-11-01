@@ -29,14 +29,17 @@ import (
 	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/elasticsearchexporter/internal/objmodel"
 )
 
-var expectedSpanBody = `{"@timestamp":"2023-04-19T03:04:05.000000006Z","Attributes.service.instance.id":"23","Duration":1000000,"EndTimestamp":"2023-04-19T03:04:06.000000006Z","Events.fooEvent.eventMockBar":"bar","Events.fooEvent.eventMockFoo":"foo","Events.fooEvent.time":"2023-04-19T03:04:05.000000006Z","Kind":"SPAN_KIND_CLIENT","Link":"[{\"attribute\":{},\"spanID\":\"\",\"traceID\":\"01020304050607080807060504030200\"}]","Name":"client span","Resource.cloud.platform":"aws_elastic_beanstalk","Resource.cloud.provider":"aws","Resource.deployment.environment":"BETA","Resource.service.instance.id":"23","Resource.service.name":"some-service","Resource.service.version":"env-version-1234","Scope.lib-foo":"lib-bar","Scope.name":"io.opentelemetry.rabbitmq-2.7","Scope.version":"1.30.0-alpha","SpanId":"1920212223242526","TraceId":"01020304050607080807060504030201","TraceStatus":2,"TraceStatusDescription":"Test"}`
+const (
+	expectedSpanBody               = `{"@timestamp":"2023-04-19T03:04:05.000000006Z","Attributes.service.instance.id":"23","Duration":1000000,"EndTimestamp":"2023-04-19T03:04:06.000000006Z","Events.fooEvent.eventMockBar":"bar","Events.fooEvent.eventMockFoo":"foo","Events.fooEvent.time":"2023-04-19T03:04:05.000000006Z","Kind":"SPAN_KIND_CLIENT","Link":"[{\"attribute\":{},\"spanID\":\"\",\"traceID\":\"01020304050607080807060504030200\"}]","Name":"client span","Resource.cloud.platform":"aws_elastic_beanstalk","Resource.cloud.provider":"aws","Resource.deployment.environment":"BETA","Resource.service.instance.id":"23","Resource.service.name":"some-service","Resource.service.version":"env-version-1234","Scope.lib-foo":"lib-bar","Scope.name":"io.opentelemetry.rabbitmq-2.7","Scope.version":"1.30.0-alpha","SpanId":"1920212223242526","TraceId":"01020304050607080807060504030201","TraceStatus":2,"TraceStatusDescription":"Test"}`
+	expectedSpanBodyWithDataStream = `{"@timestamp":"2023-04-19T03:04:05.000000006Z","Attributes.data_stream.dataset":"two","Attributes.data_stream.namespace":"three","Attributes.data_stream.type":"one","Attributes.service.instance.id":"23","Duration":1000000,"EndTimestamp":"2023-04-19T03:04:06.000000006Z","Events.fooEvent.eventMockBar":"bar","Events.fooEvent.eventMockFoo":"foo","Events.fooEvent.time":"2023-04-19T03:04:05.000000006Z","Kind":"SPAN_KIND_CLIENT","Link":"[{\"attribute\":{},\"spanID\":\"\",\"traceID\":\"01020304050607080807060504030200\"}]","Name":"client span","Resource.cloud.platform":"aws_elastic_beanstalk","Resource.cloud.provider":"aws","Resource.deployment.environment":"BETA","Resource.service.instance.id":"23","Resource.service.name":"some-service","Resource.service.version":"env-version-1234","Scope.lib-foo":"lib-bar","Scope.name":"io.opentelemetry.rabbitmq-2.7","Scope.version":"1.30.0-alpha","SpanId":"1920212223242526","TraceId":"01020304050607080807060504030201","TraceStatus":2,"TraceStatusDescription":"Test"}`
+)
 
-var (
+const (
 	expectedLogBody                   = `{"@timestamp":"2023-04-19T03:04:05.000000006Z","Attributes.log-attr1":"value1","Body":"log-body","Resource.key1":"value1","Scope.name":"","Scope.version":"","SeverityNumber":0,"TraceFlags":0}`
 	expectedLogBodyWithEmptyTimestamp = `{"@timestamp":"1970-01-01T00:00:00.000000000Z","Attributes.log-attr1":"value1","Body":"log-body","Resource.key1":"value1","Scope.name":"","Scope.version":"","SeverityNumber":0,"TraceFlags":0}`
 )
 
-var expectedMetricsEncoded = `{"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu0","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"idle","system":{"cpu":{"time":440.23}}}
+const expectedMetricsEncoded = `{"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu0","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"idle","system":{"cpu":{"time":440.23}}}
 {"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu0","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"interrupt","system":{"cpu":{"time":0.0}}}
 {"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu0","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"nice","system":{"cpu":{"time":0.14}}}
 {"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu0","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"softirq","system":{"cpu":{"time":0.77}}}
@@ -54,19 +57,39 @@ var expectedMetricsEncoded = `{"@timestamp":"2024-06-12T10:20:16.419290690Z","cp
 {"@timestamp":"2024-06-12T10:20:16.419290690Z","cpu":"cpu1","host":{"hostname":"my-host","name":"my-host","os":{"platform":"linux"}},"state":"wait","system":{"cpu":{"time":0.95}}}`
 
 func TestEncodeSpan(t *testing.T) {
-	encoder, _ := newEncoder(MappingNone)
-	td := mockResourceSpans()
-	var buf bytes.Buffer
-	err := encoder.encodeSpan(
-		encodingContext{
-			resource: td.ResourceSpans().At(0).Resource(),
-			scope:    td.ResourceSpans().At(0).ScopeSpans().At(0).Scope(),
-		},
-		td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0),
-		elasticsearch.Index{}, &buf,
-	)
-	assert.NoError(t, err)
-	assert.Equal(t, expectedSpanBody, buf.String())
+	t.Run("non data stream", func(t *testing.T) {
+		encoder, _ := newEncoder(MappingNone)
+		td := mockResourceSpans()
+		var buf bytes.Buffer
+		err := encoder.encodeSpan(
+			encodingContext{
+				resource: td.ResourceSpans().At(0).Resource(),
+				scope:    td.ResourceSpans().At(0).ScopeSpans().At(0).Scope(),
+			},
+			td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0),
+			elasticsearch.Index{}, &buf,
+		)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedSpanBody, buf.String())
+	})
+
+	// See https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/42454.
+	t.Run("data stream", func(t *testing.T) {
+		encoder, _ := newEncoder(MappingNone)
+		td := mockResourceSpans()
+		var buf bytes.Buffer
+		err := encoder.encodeSpan(
+			encodingContext{
+				resource: td.ResourceSpans().At(0).Resource(),
+				scope:    td.ResourceSpans().At(0).ScopeSpans().At(0).Scope(),
+			},
+			td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0),
+			elasticsearch.NewDataStreamIndex("one", "two", "three"),
+			&buf,
+		)
+		assert.NoError(t, err)
+		assert.Equal(t, expectedSpanBodyWithDataStream, buf.String())
+	})
 }
 
 func TestEncodeLog(t *testing.T) {
@@ -319,7 +342,7 @@ func TestEncodeSpan_Events(t *testing.T) {
 	t.Parallel()
 
 	span := ptrace.NewSpan()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		event := span.Events().AppendEmpty()
 		event.SetName(fmt.Sprintf("event_%d", i))
 	}
@@ -397,7 +420,6 @@ func TestEncodeLogECSModeDuplication(t *testing.T) {
 	require.NoError(t, err)
 
 	want := `{"@timestamp":"2024-03-12T20:00:41.123456789Z","agent":{"name":"otlp"},"container":{"image":{"tag":["v3.4.0"]}},"event":{"action":"user-password-change"},"host":{"hostname":"localhost","name":"localhost","os":{"full":"Mac OS Mojave","name":"Mac OS X","platform":"darwin","type":"macos","version":"10.14.1"}},"service":{"name":"foo.bar","version":"1.1.0"}}`
-	require.NoError(t, err)
 
 	resourceContainerImageTags := resource.Attributes().PutEmptySlice(string(semconv.ContainerImageTagsKey))
 	err = resourceContainerImageTags.FromRaw([]any{"v3.4.0"})
@@ -436,7 +458,18 @@ func TestEncodeSpanECSMode(t *testing.T) {
 		string(semconv.ServiceInstanceIDKey):     "23",
 		string(semconv.ServiceNameKey):           "some-service",
 		string(semconv.ServiceVersionKey):        "env-version-1234",
+		string(semconv.ProcessParentPIDKey):      "42",
+		string(semconv.ProcessExecutableNameKey): "node",
+		string(semconv.ClientAddressKey):         "12.53.12.1",
+		string(semconv.SourceAddressKey):         "12.53.12.1",
+		string(semconv.FaaSInstanceKey):          "arn:aws:lambda:us-east-2:123456789012:function:custom-runtime",
+		string(semconv.FaaSTriggerKey):           "api-gateway",
 	})
+	require.NoError(t, err)
+
+	// add slice attributes
+	processCommandLineSlice := resource.Attributes().PutEmptySlice(string(semconv.ProcessCommandLineKey))
+	err = processCommandLineSlice.FromRaw([]any{"node", "app.js"})
 	require.NoError(t, err)
 
 	scope := pcommon.NewInstrumentationScope()
@@ -448,6 +481,16 @@ func TestEncodeSpanECSMode(t *testing.T) {
 	scope.CopyTo(scopeSpans.Scope())
 
 	span := scopeSpans.Spans().AppendEmpty()
+	err = span.Attributes().FromRaw(map[string]any{
+		string(semconv.MessagingDestinationNameKey): "users_queue",
+		"messaging.operation.name":                  "receive",
+		string(semconv.DBSystemKey):                 "sql",
+		"db.namespace":                              "users",
+		"db.query.text":                             "SELECT * FROM users WHERE user_id=?",
+		string(semconv.HTTPResponseBodySizeKey):     "http.response.encoded_body_size",
+	})
+	require.NoError(t, err)
+
 	span.SetName("client span")
 	span.SetSpanID([8]byte{0x19, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26})
 	span.SetTraceID([16]byte{1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1})
@@ -487,6 +530,15 @@ func TestEncodeSpanECSMode(t *testing.T) {
 	  "span": {
 		"id": "1920212223242526",
 		"name": "client span",
+		"action": "receive",
+		"db": {
+		  "instance": "users",
+		  "statement": "SELECT * FROM users WHERE user_id=?",
+		  "type": "sql"
+		},
+		"message": {
+		  "queue": { "name": "users_queue" }
+		},
 		"links": [
 		  {
 			"span_id": "1112131415161718",
@@ -517,6 +569,26 @@ func TestEncodeSpanECSMode(t *testing.T) {
 		  "name": "23"
 		},
 		"version": "env-version-1234"
+	  },
+	  "process": {
+		"parent": { "pid": "42" },
+		"title": "node",
+		"args" : ["node", "app.js"]
+	  },
+	  "client": {
+		"ip": "12.53.12.1"
+      },
+	  "source": {
+		"ip": "12.53.12.1"
+      },
+	  "faas": {
+		"id" : "arn:aws:lambda:us-east-2:123456789012:function:custom-runtime",
+		"trigger": { "type": "api-gateway" }
+	  },
+	  "http": {
+		"response": {
+		  "encoded_body_size": "http.response.encoded_body_size"
+		}
 	  }
 	}`, buf.String())
 }
@@ -569,6 +641,12 @@ func TestEncodeLogECSMode(t *testing.T) {
 		string(semconv.K8SDaemonSetNameKey):      "daemonset.name",
 		string(semconv.K8SContainerNameKey):      "container.name",
 		string(semconv.K8SClusterNameKey):        "cluster.name",
+		string(semconv.ProcessParentPIDKey):      "42",
+		string(semconv.ProcessExecutableNameKey): "node",
+		string(semconv.ClientAddressKey):         "12.53.12.1",
+		string(semconv.SourceAddressKey):         "12.53.12.1",
+		string(semconv.FaaSInstanceKey):          "arn:aws:lambda:us-east-2:123456789012:function:custom-runtime",
+		string(semconv.FaaSTriggerKey):           "api-gateway",
 	})
 	require.NoError(t, err)
 
@@ -580,7 +658,8 @@ func TestEncodeLogECSMode(t *testing.T) {
 
 	record := plog.NewLogRecord()
 	err = record.Attributes().FromRaw(map[string]any{
-		"event.name": "user-password-change",
+		"event.name":                            "user-password-change",
+		string(semconv.HTTPResponseBodySizeKey): 1024,
 	})
 	require.NoError(t, err)
 	observedTimestamp := pcommon.Timestamp(1710273641123456789)
@@ -633,8 +712,10 @@ func TestEncodeLogECSMode(t *testing.T) {
 		},
 		"process": {
 		  "pid": 9833,
-		  "command_line": "/usr/bin/ssh -l user 10.0.0.16",
-		  "executable": "/usr/bin/ssh"
+		  "args": "/usr/bin/ssh -l user 10.0.0.16",
+		  "executable": "/usr/bin/ssh",
+          "parent": { "pid": "42" },
+		   "title": "node"
 		},
 		"service": {
 		  "name": "foo.bar",
@@ -654,6 +735,7 @@ func TestEncodeLogECSMode(t *testing.T) {
 		  "manufacturer": "Samsung"
 		},
 		"event": {"action": "user-password-change"},
+		"http": { "response": {"encoded_body_size": 1024 }} ,
 		"kubernetes": {
 		  "namespace": "default",
 		  "node": {"name": "node-1"},
@@ -669,7 +751,17 @@ func TestEncodeLogECSMode(t *testing.T) {
 		  "daemonset": {"name": "daemonset.name"},
 		  "container": {"name": "container.name"}
 		},
-		"orchestrator": {"cluster": {"name": "cluster.name"}}
+		"orchestrator": {"cluster": {"name": "cluster.name"}},
+        "client": {
+			"ip": "12.53.12.1"
+		},
+        "source": {
+			"ip": "12.53.12.1"
+		},
+        "faas": {
+		    "id" : "arn:aws:lambda:us-east-2:123456789012:function:custom-runtime",
+		     "trigger": { "type": "api-gateway" }
+	  }
 	}`, buf.String())
 }
 
